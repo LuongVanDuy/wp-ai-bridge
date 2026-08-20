@@ -10,13 +10,17 @@ final class WPAIB_Auth {
     }
 
     public static function has_token(): bool {
-        return is_string(get_option(WPAIB_OPTION_TOKEN_HASH, ''))
-            && '' !== get_option(WPAIB_OPTION_TOKEN_HASH, '');
+        $hash = get_option(WPAIB_OPTION_TOKEN_HASH, '');
+        return is_string($hash) && '' !== $hash;
     }
 
     public static function token_created_at(): string {
         $value = get_option(WPAIB_OPTION_TOKEN_CREATED_AT, '');
         return is_string($value) ? $value : '';
+    }
+
+    public static function maintenance_enabled(): bool {
+        return '1' === get_option(WPAIB_OPTION_WRITE_ENABLED, '0');
     }
 
     public static function generate_token(): string {
@@ -63,6 +67,23 @@ final class WPAIB_Auth {
             __('A valid WP AI Bridge Bearer token or WordPress administrator authentication is required.', 'wp-ai-bridge'),
             ['status' => 401]
         );
+    }
+
+    public static function authorize_write(WP_REST_Request $request): bool|WP_Error {
+        $authorized = self::authorize_read($request);
+        if (is_wp_error($authorized)) {
+            return $authorized;
+        }
+
+        if (!self::maintenance_enabled()) {
+            return new WP_Error(
+                'wpaib_maintenance_disabled',
+                __('Maintenance Mode is disabled. Enable it in Settings → WP AI Bridge to allow theme/plugin changes.', 'wp-ai-bridge'),
+                ['status' => 403]
+            );
+        }
+
+        return true;
     }
 
     public static function method(): string {
