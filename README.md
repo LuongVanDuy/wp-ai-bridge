@@ -1,112 +1,106 @@
 # WP AI Bridge
 
-A guarded WordPress REST + MCP bridge for authorized AI-assisted diagnostics and theme/plugin development.
+WP AI Bridge keeps the code that matters on a WordPress site in a GitHub repository so ChatGPT web can work on the project through the normal GitHub connector.
 
-## What it does
-
-- Connects ChatGPT to WordPress through a remote MCP endpoint.
-- Built-in OAuth 2.1 Authorization Code + PKCE flow using your WordPress administrator login.
-- Dynamic OAuth client registration for ChatGPT.
-- Access and refresh tokens so the ChatGPT connection can persist.
-- Site / PHP / active-theme information.
-- Plugin inventory and activation state.
-- Directory browsing and source-code search.
-- Read selected files under `plugins/`, `themes/`, and `uploads/`.
-- Create, replace, delete, and restore files under `plugins/` and `themes/`.
-- Automatic backup before overwrite/delete.
-- PHP syntax validation before PHP files are written.
-- Plugin activation/deactivation.
-- Path traversal and symlink escape protection.
-- Secret redaction and bounded audit logging.
-- Optional manual Bearer API token for curl/scripts.
-- GitHub-backed update checks and WordPress-native updating from repository `main`.
-
-The bridge intentionally does **not** expose WordPress core writes, `wp-config.php`, arbitrary database queries, or shell commands.
-
-## Install
-
-1. Put the repository at `wp-content/plugins/wp-ai-bridge`.
-2. Activate **WP AI Bridge**.
-3. Open **Settings → WP AI Bridge**.
-4. Confirm HTTPS is detected.
-5. Copy the MCP URL shown on the settings page.
-
-No Maintenance Mode is required. Authorized MCP clients always receive the hard-scoped theme/plugin capabilities.
-
-## ChatGPT connection
-
-MCP URL:
+## How it works
 
 ```text
-https://example.com/wp-json/wp-ai-bridge/v1/mcp
+WordPress  <->  GitHub project repo  <->  ChatGPT web
 ```
 
-Use **OAuth** when creating the custom MCP app in ChatGPT. ChatGPT discovers the plugin's OAuth metadata, registers itself as a client, opens WordPress for administrator authorization, exchanges the authorization code with PKCE, and stores access/refresh tokens.
+The plugin pushes the live project source to GitHub. ChatGPT reads and edits that repository. WP AI Bridge then checks the configured GitHub branch and deploys new commits back to WordPress.
 
-OAuth metadata endpoints:
+## Synced scope
+
+By default WP AI Bridge syncs only:
+
+- the active theme;
+- the parent theme when a child theme is active;
+- active plugins.
+
+It intentionally does **not** push:
+
+- Media Library / `wp-content/uploads`;
+- WordPress core;
+- `wp-config.php`;
+- WP AI Bridge itself;
+- cache directories;
+- logs and backups;
+- `.env`, private keys, database dumps, archives;
+- `node_modules`;
+- individual files larger than 5 MiB.
+
+A small `.wpaib/site.json` manifest is added to the project repository so an AI client can identify the WordPress site, active theme, active plugins, and sync scope.
+
+## Setup
+
+1. Create a dedicated GitHub repository for the website. Initialize its `main` branch (for example by creating the repository with a README).
+2. Create a fine-grained GitHub personal access token limited to that repository with **Contents: Read and write**.
+3. Install and activate WP AI Bridge.
+4. Open **Settings → WP AI Bridge**.
+5. Enter `owner/repository`, branch, and the GitHub token.
+6. Click **Connect GitHub**.
+7. WP AI Bridge automatically starts the first project snapshot. You can also use **Push project now** at any time.
+
+The GitHub token is encrypted at rest using Sodium when available, with AES-256-GCM/OpenSSL as the fallback.
+
+## Repository layout
+
+A synced site repository looks like:
 
 ```text
-/.well-known/oauth-protected-resource
-/.well-known/oauth-authorization-server
+.wpaib/
+  site.json
+themes/
+  active-theme/
+  parent-theme/
+plugins/
+  active-plugin-a/
+  active-plugin-b/
 ```
 
-Allowed write scope:
+## ChatGPT workflow
+
+Once the site project repository is visible to the GitHub connector, a ChatGPT web conversation can read and modify the repository directly.
+
+Typical workflow:
 
 ```text
-wp-content/plugins/**
+You ask ChatGPT to change the site
+        ↓
+ChatGPT reads/edits the GitHub project
+        ↓
+GitHub receives a new commit
+        ↓
+WP AI Bridge notices the branch changed
+        ↓
+Changed theme/plugin files are deployed
+```
+
+WP AI Bridge polls the configured branch about every five minutes through WP-Cron. Actual timing depends on WordPress traffic because WP-Cron is request-driven.
+
+## Deploy safety
+
+GitHub-to-WordPress deploys are hard-scoped to:
+
+```text
 wp-content/themes/**
+wp-content/plugins/**
 ```
 
-Hard-blocked scope includes WordPress core, `wp-config.php`, `.env`, server configuration, arbitrary database access, shell commands, archives, and private-key files.
+For changed files, WP AI Bridge:
 
-## MCP tools
+- rejects path traversal and symlink escapes;
+- blocks sensitive/server configuration file types;
+- creates a backup before overwrite/delete;
+- parses PHP with `TOKEN_PARSE` before deployment;
+- invalidates OPcache for changed PHP files when available;
+- records actions in the audit log.
 
-Read/discovery tools:
+No arbitrary database queries, WordPress core writes, or shell commands are exposed.
 
-```text
-wp_ping
-wp_site_info
-wp_list_plugins
-wp_list_directory
-wp_search_files
-wp_read_file
-wp_recent_audit
-```
+## Plugin updates
 
-Theme/plugin development tools:
+The settings page also checks `LuongVanDuy/wp-ai-bridge` `main` for newer WP AI Bridge versions. If a newer version exists, the normal WordPress plugin upgrader can install it directly from GitHub.
 
-```text
-wp_write_file
-wp_delete_file
-wp_restore_backup
-wp_activate_plugin
-wp_deactivate_plugin
-```
-
-## Manual API token
-
-The settings page still lets administrators create a manual `wpaib_...` Bearer token for curl/scripts. This is optional and is not needed for the ChatGPT OAuth connection.
-
-## Updating
-
-The WordPress settings page checks the GitHub `main` branch when loaded. When `main` contains a higher plugin version, **Update now** uses the normal WordPress plugin upgrader to install the GitHub ZIP.
-
-For every new release, increase both the `Version:` header and `WPAIB_VERSION` in `wp-ai-bridge.php`.
-
-## Security model
-
-- OAuth authorization requires a logged-in WordPress administrator with `manage_options`.
-- OAuth uses Authorization Code + PKCE S256.
-- Access tokens expire after one hour; refresh tokens are rotated and expire after 30 days.
-- OAuth clients are dynamically registered and redirect URIs are restricted to HTTPS OpenAI/ChatGPT hosts.
-- OAuth tokens are stored only as HMAC hashes in WordPress.
-- Manual API tokens are stored only as WordPress password hashes.
-- HTTPS is expected for remote access.
-- Reads are bounded and sensitive content is redacted.
-- Writes are hard-scoped to themes/plugins.
-- PHP writes are parsed with `TOKEN_PARSE` before deployment.
-- Overwrites/deletes create rollback backups.
-- Internal backup paths are blocked from the bridge read API.
-- All bridge actions are audit logged.
-
-The project is intended only for WordPress installations you own or are authorized to administer.
+The project is intended only for WordPress installations and GitHub repositories you own or are authorized to administer.
