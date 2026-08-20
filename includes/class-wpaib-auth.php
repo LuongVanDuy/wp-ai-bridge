@@ -25,20 +25,15 @@ final class WPAIB_Auth {
         update_option(WPAIB_OPTION_TOKEN_CREATED_AT, gmdate('c'), false);
 
         self::$method = 'wordpress_admin';
-        if (class_exists('WPAIB_Audit')) {
-            WPAIB_Audit::record('api_token_generated');
-        }
+        if (class_exists('WPAIB_Audit')) WPAIB_Audit::record('api_token_generated');
         return $token;
     }
 
     public static function revoke_token(): void {
         delete_option(WPAIB_OPTION_TOKEN_HASH);
         delete_option(WPAIB_OPTION_TOKEN_CREATED_AT);
-
         self::$method = 'wordpress_admin';
-        if (class_exists('WPAIB_Audit')) {
-            WPAIB_Audit::record('api_token_revoked');
-        }
+        if (class_exists('WPAIB_Audit')) WPAIB_Audit::record('api_token_revoked');
     }
 
     public static function authorize_read(WP_REST_Request $request): bool|WP_Error {
@@ -48,24 +43,28 @@ final class WPAIB_Auth {
         }
 
         $token = self::extract_bearer_token($request);
+        if ('' !== $token && class_exists('WPAIB_OAuth')) {
+            $oauth = WPAIB_OAuth::validate_access_token($token);
+            if (is_array($oauth)) {
+                self::$method = 'oauth_bearer';
+                return true;
+            }
+        }
+
         $hash = get_option(WPAIB_OPTION_TOKEN_HASH, '');
         if ('' !== $token && is_string($hash) && '' !== $hash && wp_check_password($token, $hash)) {
-            self::$method = 'bearer_token';
+            self::$method = 'api_bearer';
             return true;
         }
 
         self::$method = 'none';
         return new WP_Error(
             'wpaib_unauthorized',
-            __('A valid WP AI Bridge Bearer token or WordPress administrator authentication is required.', 'wp-ai-bridge'),
+            __('OAuth authorization, a valid WP AI Bridge API token, or WordPress administrator authentication is required.', 'wp-ai-bridge'),
             ['status' => 401]
         );
     }
 
-    /**
-     * A valid bridge credential grants write access only to the hard-coded
-     * theme/plugin scope enforced by WPAIB_Maintenance.
-     */
     public static function authorize_write(WP_REST_Request $request): bool|WP_Error {
         return self::authorize_read($request);
     }
@@ -82,11 +81,8 @@ final class WPAIB_Auth {
         if ('' === $header && isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
             $header = trim((string) wp_unslash($_SERVER['REDIRECT_HTTP_AUTHORIZATION']));
         }
-        if (!preg_match('/^Bearer\s+(.+)$/i', $header, $matches)) {
-            return '';
-        }
-
+        if (!preg_match('/^Bearer\s+(.+)$/i', $header, $matches)) return '';
         $token = trim($matches[1]);
-        return strlen($token) <= 128 ? $token : '';
+        return strlen($token) <= 256 ? $token : '';
     }
 }
