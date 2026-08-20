@@ -9,8 +9,14 @@ final class WPAIB_Updater {
     private const CACHE_KEY = 'wpaib_github_update_status';
 
     public static function boot(): void {
+        // Inject our GitHub update both when WordPress writes and reads the
+        // update_plugins transient. The read filter is important because the
+        // Plugins screen may otherwise keep showing a stale core transient for
+        // hours even though our own GitHub version check already sees a release.
         add_filter('pre_set_site_transient_update_plugins', [self::class, 'inject_update']);
+        add_filter('site_transient_update_plugins', [self::class, 'inject_update']);
         add_filter('upgrader_source_selection', [self::class, 'normalize_source'], 10, 4);
+        add_action('upgrader_process_complete', [self::class, 'after_upgrade'], 10, 2);
     }
 
     public static function status(bool $force = false): array {
@@ -35,6 +41,7 @@ final class WPAIB_Updater {
             'redirection' => 3,
             'headers' => [
                 'Accept' => 'text/plain',
+                'Cache-Control' => 'no-cache',
                 'User-Agent' => 'WP-AI-Bridge/' . WPAIB_VERSION . '; ' . home_url('/'),
             ],
         ]);
@@ -82,18 +89,26 @@ final class WPAIB_Updater {
         if (!isset($transient->response) || !is_array($transient->response)) {
             $transient->response = [];
         }
-
-        $status = self::status(false);
-        if (empty($status['update_available']) || empty($status['remote_version'])) {
-            return $transient;
+        if (!isset($transient->no_update) || !is_array($transient->no_update)) {
+            $transient->no_update = [];
         }
 
         $plugin = plugin_basename(WPAIB_FILE);
-        $transient->response[$plugin] = (object) [
+        $status = self::status(false);
+
+        // Always remove a stale entry first so an older cached result cannot
+        // survive after the remote version changes.
+        unset($transient->response[$plugin], $transient->no_update[$plugin]);
+
+        if (empty($status['remote_version']) || !empty($status['error'])) {
+            return $transient;
+        }
+
+        $item = (object) [
             'id' => self::REPO_URL,
             'slug' => 'wp-ai-bridge',
             'plugin' => $plugin,
-            'new_version' => $status['remote_version'],
+            'new_version' => (string) $status['remote_version'],
             'url' => self::REPO_URL,
             'package' => self::PACKAGE_URL,
             'tested' => '',
@@ -101,6 +116,12 @@ final class WPAIB_Updater {
             'icons' => [],
             'banners' => [],
         ];
+
+        if (!empty($status['update_available'])) {
+            $transient->response[$plugin] = $item;
+        } else {
+            $transient->no_update[$plugin] = $item;
+        }
 
         return $transient;
     }
@@ -118,7 +139,16 @@ final class WPAIB_Updater {
 
         $source = trailingslashit($source);
         $remote_source = trailingslashit($remote_source);
-        $expected = $remote_source . 'wp-ai-bridge/';
+
+        // Preserve the directory name that is installed right now. GitHub ZIPs
+        // extract as wp-ai-bridge-main/, while a manually normalized install may
+        // already be wp-ai-bridge/. Changing this directory during an update
+        // changes plugin_basename(), which makes WordPress drop the active state.
+        $installed_dir = basename(wp_normalize_path(dirname(WPAIB_FILE)));
+        if ('' === $installed_dir || '.' === $installed_dir) {
+            $installed_dir = 'wp-ai-bridge';
+        }
+        $expected = $remote_source . $installed_dir . '/';
 
         if ($source === $expected) {
             return $source;
@@ -136,5 +166,22 @@ final class WPAIB_Updater {
         }
 
         return $expected;
+    }
+
+    public static function after_upgrade($upgrader, array $hook_extra): void {
+        if (($hook_extra['action'] ?? '') !== 'update' || ($hook_extra['type'] ?? '') !== 'plugin') {
+            return;
+        }
+
+        $plugins = [];
+        if (!empty($hook_extra['plugins']) && is_array($hook_extra['plugins'])) {
+            $plugins = $hook_extra['plugins'];
+        } elseif (!empty($hook_extra['plugin']) && is_string($hook_extra['plugin'])) {
+            $plugins = [$hook_extra['plugin']];
+        }
+
+        if (in_array(plugin_basename(WPAIB_FILE), $plugins, true)) {
+            delete_site_transient(self::CACHE_KEY);
+        }
     }
 }
