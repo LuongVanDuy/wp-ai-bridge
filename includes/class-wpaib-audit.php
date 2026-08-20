@@ -14,6 +14,10 @@ final class WPAIB_Audit {
             $entries = [];
         }
 
+        if (class_exists('WPAIB_Auth') && !isset($context['auth_method'])) {
+            $context['auth_method'] = WPAIB_Auth::method();
+        }
+
         $entries[] = [
             'time' => current_time('mysql', true),
             'user_id' => get_current_user_id(),
