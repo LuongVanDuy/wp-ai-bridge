@@ -61,7 +61,7 @@ final class WPAIB_MCP {
         return [
             'supportedVersions' => [self::MODERN_PROTOCOL, self::LEGACY_PROTOCOL],
             'capabilities' => ['tools' => ['listChanged' => false]],
-            'instructions' => 'Reads may inspect plugins, themes, and selected uploads. Maintenance Mode allows continuous writes only under plugins/ and themes/. No core, wp-config.php, shell, or arbitrary database tools.',
+            'instructions' => 'Authenticated clients may continuously inspect and modify plugins/ and themes/. No WordPress core, wp-config.php, shell, or arbitrary database tools are exposed.',
             'ttlMs' => 300000,
             'cacheScope' => 'private',
         ];
@@ -74,7 +74,7 @@ final class WPAIB_MCP {
             'protocolVersion' => in_array($requested, $legacy, true) ? $requested : self::LEGACY_PROTOCOL,
             'capabilities' => ['tools' => ['listChanged' => false]],
             'serverInfo' => self::server_info(),
-            'instructions' => 'Existing files are backed up before overwrite/delete. PHP writes are syntax-checked. Write scope is plugins/ and themes/ only.',
+            'instructions' => 'Write scope is always limited to plugins/ and themes/. Existing files are backed up before overwrite/delete and PHP writes are syntax-checked.',
         ];
     }
 
@@ -85,13 +85,13 @@ final class WPAIB_MCP {
         $empty = ['type' => 'object', 'properties' => new stdClass(), 'additionalProperties' => false];
 
         return [
-            ['name' => 'wp_ping', 'description' => 'Test connection and current bridge mode.', 'inputSchema' => $empty, 'annotations' => $ro],
+            ['name' => 'wp_ping', 'description' => 'Test connection and current bridge capabilities.', 'inputSchema' => $empty, 'annotations' => $ro],
             ['name' => 'wp_site_info', 'description' => 'Return WordPress, PHP, theme and bridge capability information.', 'inputSchema' => $empty, 'annotations' => $ro],
             ['name' => 'wp_list_plugins', 'description' => 'List installed plugins, versions and activation state.', 'inputSchema' => $empty, 'annotations' => $ro],
             ['name' => 'wp_list_directory', 'description' => 'List files/directories under plugins/, themes/, or uploads/.', 'inputSchema' => ['type' => 'object', 'properties' => ['path' => ['type' => 'string'], 'recursive' => ['type' => 'boolean', 'default' => false], 'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 500, 'default' => 200]], 'required' => ['path'], 'additionalProperties' => false], 'annotations' => $ro],
             ['name' => 'wp_search_files', 'description' => 'Search source files inside plugins or themes.', 'inputSchema' => ['type' => 'object', 'properties' => ['query' => ['type' => 'string'], 'root' => ['type' => 'string', 'enum' => ['plugins', 'themes'], 'default' => 'plugins'], 'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 50]], 'required' => ['query'], 'additionalProperties' => false], 'annotations' => $ro],
             ['name' => 'wp_read_file', 'description' => 'Read a bounded non-sensitive file under plugins/, themes/, or uploads/.', 'inputSchema' => ['type' => 'object', 'properties' => ['path' => ['type' => 'string']], 'required' => ['path'], 'additionalProperties' => false], 'annotations' => $ro],
-            ['name' => 'wp_write_file', 'description' => 'Create or replace a file under plugins/ or themes/. Existing files are backed up; PHP is syntax-checked.', 'inputSchema' => ['type' => 'object', 'properties' => ['path' => ['type' => 'string'], 'content' => ['type' => 'string']], 'required' => ['path', 'content'], 'additionalProperties' => false], 'annotations' => $rw],
+            ['name' => 'wp_write_file', 'description' => 'Create or replace a file under plugins/ or themes/. Existing files are backed up and PHP is syntax-checked.', 'inputSchema' => ['type' => 'object', 'properties' => ['path' => ['type' => 'string'], 'content' => ['type' => 'string']], 'required' => ['path', 'content'], 'additionalProperties' => false], 'annotations' => $rw],
             ['name' => 'wp_delete_file', 'description' => 'Delete one file under plugins/ or themes/ after making a backup.', 'inputSchema' => ['type' => 'object', 'properties' => ['path' => ['type' => 'string']], 'required' => ['path'], 'additionalProperties' => false], 'annotations' => $del],
             ['name' => 'wp_restore_backup', 'description' => 'Restore a file backup returned by a previous write/delete operation.', 'inputSchema' => ['type' => 'object', 'properties' => ['backup_id' => ['type' => 'string']], 'required' => ['backup_id'], 'additionalProperties' => false], 'annotations' => $rw],
             ['name' => 'wp_activate_plugin', 'description' => 'Activate an installed plugin.', 'inputSchema' => ['type' => 'object', 'properties' => ['plugin' => ['type' => 'string']], 'required' => ['plugin'], 'additionalProperties' => false], 'annotations' => $rw],
@@ -105,26 +105,21 @@ final class WPAIB_MCP {
         $args = is_array($params['arguments'] ?? null) ? $params['arguments'] : [];
         if ('' === $name) return self::rpc_error($id, -32602, 'Tool name is required.', 400);
 
-        $write_tools = ['wp_write_file', 'wp_delete_file', 'wp_restore_backup', 'wp_activate_plugin', 'wp_deactivate_plugin'];
-        if (in_array($name, $write_tools, true) && !WPAIB_Auth::maintenance_enabled()) {
-            $result = new WP_Error('wpaib_maintenance_disabled', 'Maintenance Mode is disabled.', ['status' => 403]);
-        } else {
-            $result = match ($name) {
-                'wp_ping' => self::tool_ping(),
-                'wp_site_info' => WPAIB_REST::site_info()->get_data(),
-                'wp_list_plugins' => WPAIB_REST::plugins()->get_data(),
-                'wp_list_directory' => WPAIB_Files::list_directory((string) ($args['path'] ?? ''), !empty($args['recursive']), (int) ($args['limit'] ?? 200)),
-                'wp_search_files' => WPAIB_Files::search((string) ($args['query'] ?? ''), (string) ($args['root'] ?? 'plugins'), (int) ($args['limit'] ?? 50)),
-                'wp_read_file' => WPAIB_Files::read((string) ($args['path'] ?? '')),
-                'wp_write_file' => WPAIB_Maintenance::write_file((string) ($args['path'] ?? ''), is_string($args['content'] ?? null) ? $args['content'] : ''),
-                'wp_delete_file' => WPAIB_Maintenance::delete_file((string) ($args['path'] ?? '')),
-                'wp_restore_backup' => WPAIB_Maintenance::restore_backup((string) ($args['backup_id'] ?? '')),
-                'wp_activate_plugin' => WPAIB_Maintenance::activate_plugin((string) ($args['plugin'] ?? '')),
-                'wp_deactivate_plugin' => WPAIB_Maintenance::deactivate_plugin((string) ($args['plugin'] ?? '')),
-                'wp_recent_audit' => WPAIB_Audit::recent(max(1, min((int) ($args['limit'] ?? 25), 100))),
-                default => new WP_Error('wpaib_unknown_tool', 'Unknown tool.', ['status' => 404]),
-            };
-        }
+        $result = match ($name) {
+            'wp_ping' => self::tool_ping(),
+            'wp_site_info' => WPAIB_REST::site_info()->get_data(),
+            'wp_list_plugins' => WPAIB_REST::plugins()->get_data(),
+            'wp_list_directory' => WPAIB_Files::list_directory((string) ($args['path'] ?? ''), !empty($args['recursive']), (int) ($args['limit'] ?? 200)),
+            'wp_search_files' => WPAIB_Files::search((string) ($args['query'] ?? ''), (string) ($args['root'] ?? 'plugins'), (int) ($args['limit'] ?? 50)),
+            'wp_read_file' => WPAIB_Files::read((string) ($args['path'] ?? '')),
+            'wp_write_file' => WPAIB_Maintenance::write_file((string) ($args['path'] ?? ''), is_string($args['content'] ?? null) ? $args['content'] : ''),
+            'wp_delete_file' => WPAIB_Maintenance::delete_file((string) ($args['path'] ?? '')),
+            'wp_restore_backup' => WPAIB_Maintenance::restore_backup((string) ($args['backup_id'] ?? '')),
+            'wp_activate_plugin' => WPAIB_Maintenance::activate_plugin((string) ($args['plugin'] ?? '')),
+            'wp_deactivate_plugin' => WPAIB_Maintenance::deactivate_plugin((string) ($args['plugin'] ?? '')),
+            'wp_recent_audit' => WPAIB_Audit::recent(max(1, min((int) ($args['limit'] ?? 25), 100))),
+            default => new WP_Error('wpaib_unknown_tool', 'Unknown tool.', ['status' => 404]),
+        };
 
         WPAIB_Audit::record('mcp_tool_call', ['tool' => $name, 'ok' => !is_wp_error($result)]);
         return self::success($id, is_wp_error($result) ? self::tool_error($result) : self::tool_content($result), $modern);
@@ -137,7 +132,7 @@ final class WPAIB_MCP {
             'version' => WPAIB_VERSION,
             'mcp_endpoint' => self::endpoint_url(),
             'auth_method' => WPAIB_Auth::method(),
-            'mode' => WPAIB_Auth::maintenance_enabled() ? 'maintenance' : 'read-only',
+            'mode' => 'theme-plugin-write',
             'write_scope' => ['plugins', 'themes'],
             'tools' => array_column(self::tools(), 'name'),
         ];

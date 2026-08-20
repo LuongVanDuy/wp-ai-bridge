@@ -15,19 +15,16 @@ final class WPAIB_REST {
             'callback' => [self::class, 'ping'],
             'permission_callback' => [self::class, 'can_read'],
         ]);
-
         register_rest_route(self::NS, '/site-info', [
             'methods' => WP_REST_Server::READABLE,
             'callback' => [self::class, 'site_info'],
             'permission_callback' => [self::class, 'can_read'],
         ]);
-
         register_rest_route(self::NS, '/plugins', [
             'methods' => WP_REST_Server::READABLE,
             'callback' => [self::class, 'plugins'],
             'permission_callback' => [self::class, 'can_read'],
         ]);
-
         register_rest_route(self::NS, '/file', [
             'methods' => WP_REST_Server::READABLE,
             'callback' => [self::class, 'read_file'],
@@ -40,7 +37,6 @@ final class WPAIB_REST {
                 ],
             ],
         ]);
-
         register_rest_route(self::NS, '/audit', [
             'methods' => WP_REST_Server::READABLE,
             'callback' => [self::class, 'audit'],
@@ -54,8 +50,6 @@ final class WPAIB_REST {
 
     public static function ping(): WP_REST_Response {
         WPAIB_Audit::record('ping');
-        $maintenance = WPAIB_Auth::maintenance_enabled();
-
         return new WP_REST_Response([
             'connected' => true,
             'plugin' => 'WP AI Bridge',
@@ -65,8 +59,8 @@ final class WPAIB_REST {
             'mcp_endpoint' => class_exists('WPAIB_MCP') ? WPAIB_MCP::endpoint_url() : null,
             'auth_method' => WPAIB_Auth::method(),
             'https' => is_ssl(),
-            'mode' => $maintenance ? 'maintenance' : 'read-only',
-            'write_enabled' => $maintenance,
+            'mode' => 'theme-plugin-write',
+            'write_enabled' => true,
             'write_scope' => ['plugins', 'themes'],
             'capabilities' => [
                 'site_info',
@@ -75,19 +69,17 @@ final class WPAIB_REST {
                 'search_files',
                 'read_file',
                 'read_audit',
-                'write_theme_plugin_files' => $maintenance,
-                'delete_theme_plugin_files' => $maintenance,
-                'restore_file_backup' => $maintenance,
-                'activate_deactivate_plugins' => $maintenance,
+                'write_theme_plugin_files' => true,
+                'delete_theme_plugin_files' => true,
+                'restore_file_backup' => true,
+                'activate_deactivate_plugins' => true,
             ],
         ]);
     }
 
     public static function site_info(): WP_REST_Response {
         global $wp_version;
-
         WPAIB_Audit::record('site_info');
-
         return new WP_REST_Response([
             'wordpress' => $wp_version,
             'php' => PHP_VERSION,
@@ -97,8 +89,8 @@ final class WPAIB_REST {
                 'template' => get_template(),
                 'version' => wp_get_theme()->get('Version'),
             ],
-            'mode' => WPAIB_Auth::maintenance_enabled() ? 'maintenance' : 'read-only',
-            'write_enabled' => WPAIB_Auth::maintenance_enabled(),
+            'mode' => 'theme-plugin-write',
+            'write_enabled' => true,
             'write_scope' => ['plugins', 'themes'],
             'read_roots' => array_keys(WPAIB_Files::allowed_roots()),
         ]);
@@ -109,7 +101,6 @@ final class WPAIB_REST {
         $plugins = get_plugins();
         $active = get_option('active_plugins', []);
         $rows = [];
-
         foreach ($plugins as $file => $data) {
             $rows[] = [
                 'file' => $file,
@@ -118,7 +109,6 @@ final class WPAIB_REST {
                 'active' => in_array($file, $active, true),
             ];
         }
-
         WPAIB_Audit::record('list_plugins', ['count' => count($rows)]);
         return new WP_REST_Response($rows);
     }

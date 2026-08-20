@@ -19,13 +19,8 @@ final class WPAIB_Auth {
         return is_string($value) ? $value : '';
     }
 
-    public static function maintenance_enabled(): bool {
-        return '1' === get_option(WPAIB_OPTION_WRITE_ENABLED, '0');
-    }
-
     public static function generate_token(): string {
         $token = 'wpaib_' . bin2hex(random_bytes(32));
-
         update_option(WPAIB_OPTION_TOKEN_HASH, wp_hash_password($token), false);
         update_option(WPAIB_OPTION_TOKEN_CREATED_AT, gmdate('c'), false);
 
@@ -33,7 +28,6 @@ final class WPAIB_Auth {
         if (class_exists('WPAIB_Audit')) {
             WPAIB_Audit::record('api_token_generated');
         }
-
         return $token;
     }
 
@@ -55,7 +49,6 @@ final class WPAIB_Auth {
 
         $token = self::extract_bearer_token($request);
         $hash = get_option(WPAIB_OPTION_TOKEN_HASH, '');
-
         if ('' !== $token && is_string($hash) && '' !== $hash && wp_check_password($token, $hash)) {
             self::$method = 'bearer_token';
             return true;
@@ -69,21 +62,12 @@ final class WPAIB_Auth {
         );
     }
 
+    /**
+     * A valid bridge credential grants write access only to the hard-coded
+     * theme/plugin scope enforced by WPAIB_Maintenance.
+     */
     public static function authorize_write(WP_REST_Request $request): bool|WP_Error {
-        $authorized = self::authorize_read($request);
-        if (is_wp_error($authorized)) {
-            return $authorized;
-        }
-
-        if (!self::maintenance_enabled()) {
-            return new WP_Error(
-                'wpaib_maintenance_disabled',
-                __('Maintenance Mode is disabled. Enable it in Settings → WP AI Bridge to allow theme/plugin changes.', 'wp-ai-bridge'),
-                ['status' => 403]
-            );
-        }
-
-        return true;
+        return self::authorize_read($request);
     }
 
     public static function method(): string {
@@ -92,24 +76,17 @@ final class WPAIB_Auth {
 
     private static function extract_bearer_token(WP_REST_Request $request): string {
         $header = trim((string) $request->get_header('authorization'));
-
         if ('' === $header && isset($_SERVER['HTTP_AUTHORIZATION'])) {
             $header = trim((string) wp_unslash($_SERVER['HTTP_AUTHORIZATION']));
         }
-
         if ('' === $header && isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
             $header = trim((string) wp_unslash($_SERVER['REDIRECT_HTTP_AUTHORIZATION']));
         }
-
         if (!preg_match('/^Bearer\s+(.+)$/i', $header, $matches)) {
             return '';
         }
 
         $token = trim($matches[1]);
-        if (strlen($token) > 128) {
-            return '';
-        }
-
-        return $token;
+        return strlen($token) <= 128 ? $token : '';
     }
 }
