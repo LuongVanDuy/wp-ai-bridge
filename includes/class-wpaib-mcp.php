@@ -53,13 +53,14 @@ final class WPAIB_MCP {
         }
 
         WPAIB_Audit::record('mcp_request', ['method' => $method]);
+        $modern = self::is_modern($request, $payload);
 
         return match ($method) {
             'server/discover' => self::success($id, self::discover_result(), true),
-            'initialize' => self::success($id, self::initialize_result($params)),
+            'initialize' => self::success($id, self::initialize_result($params), $modern),
             'ping' => self::success($id, []),
-            'tools/list' => self::success($id, self::tools_list_result(), self::is_modern($request, $payload)),
-            'tools/call' => self::call_tool($id, $params, self::is_modern($request, $payload)),
+            'tools/list' => self::success($id, self::tools_list_result(), $modern),
+            'tools/call' => self::call_tool($id, $params, $modern),
             default => self::error($id, -32601, 'Method not found', 404),
         };
     }
@@ -70,7 +71,7 @@ final class WPAIB_MCP {
             'capabilities' => [
                 'tools' => ['listChanged' => false],
             ],
-            'instructions' => 'Read-only WordPress diagnostics. Use wp_read_file only for files needed to answer the user request.',
+            'instructions' => 'WordPress development bridge. Reads may inspect plugins, themes, and selected uploads. When Maintenance Mode is enabled, writes are allowed only under plugins/ and themes/. No WordPress core, wp-config.php, shell, or arbitrary database tools are exposed.',
             'ttlMs' => self::TOOL_CACHE_TTL_MS,
             'cacheScope' => 'private',
         ];
@@ -90,7 +91,7 @@ final class WPAIB_MCP {
                 'tools' => ['listChanged' => false],
             ],
             'serverInfo' => self::server_info(),
-            'instructions' => 'Read-only WordPress diagnostics. No write, shell, or arbitrary database tools are exposed.',
+            'instructions' => 'Maintenance Mode grants continuous write access only to theme/plugin files. Every overwrite/delete creates a rollback backup. PHP writes are syntax-checked before deployment.',
         ];
     }
 
@@ -109,11 +110,23 @@ final class WPAIB_MCP {
             'idempotentHint' => true,
             'openWorldHint' => false,
         ];
+        $write_safe = [
+            'readOnlyHint' => false,
+            'destructiveHint' => false,
+            'idempotentHint' => true,
+            'openWorldHint' => false,
+        ];
+        $write_destructive = [
+            'readOnlyHint' => false,
+            'destructiveHint' => true,
+            'idempotentHint' => true,
+            'openWorldHint' => false,
+        ];
 
         return [
             [
                 'name' => 'wp_ping',
-                'description' => 'Test the WP AI Bridge connection and return bridge capabilities.',
+                'description' => 'Test the WP AI Bridge connection and return current capabilities and mode.',
                 'inputSchema' => ['type' => 'object', 'properties' => new stdClass(), 'additionalProperties' => false],
                 'annotations' => $read_only,
             ],
@@ -130,16 +143,14 @@ final class WPAIB_MCP {
                 'annotations' => $read_only,
             ],
             [
-                'name' => 'wp_read_file',
-                'description' => 'Read one bounded, non-sensitive file under plugins/, themes/, or uploads/. Secrets are redacted before returning content.',
+                'name' => 'wp_list_directory',
+                'description' => 'List files/directories under plugins/, themes/, or uploads/. Useful for exploring a project before reading or editing files.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'path' => [
-                            'type' => 'string',
-                            'description' => 'Relative path beginning with plugins/, themes/, or uploads/.',
-                            'minLength' => 1,
-                        ],
+                        'path' => ['type' => 'string', 'description' => 'Directory path such as plugins, plugins/my-plugin, themes/my-theme.', 'minLength' => 1],
+                        'recursive' => ['type' => 'boolean', 'default' => false],
+                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 500, 'default' => 200],
                     ],
                     'required' => ['path'],
                     'additionalProperties' => false,
@@ -147,17 +158,106 @@ final class WPAIB_MCP {
                 'annotations' => $read_only,
             ],
             [
+                'name' => 'wp_search_files',
+                'description' => 'Search source files inside plugins or themes for a text fragment and return matching paths, line numbers, and snippets.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'query' => ['type' => 'string', 'minLength' => 1],
+                        'root' => ['type' => 'string', 'enum' => ['plugins', 'themes'], 'default' => 'plugins'],
+                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 50],
+                    ],
+                    'required' => ['query'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => $read_only,
+            ],
+            [
+                'name' => 'wp_read_file',
+                'description' => 'Read one bounded, non-sensitive file under plugins/, themes/, or uploads/. Secrets are redacted before returning content.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'path' => ['type' => 'string', 'description' => 'Relative path beginning with plugins/, themes/, or uploads/.', 'minLength' => 1],
+                    ],
+                    'required' => ['path'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => $read_only,
+            ],
+            [
+                'name' => 'wp_write_file',
+                'description' => 'Create or replace a file under plugins/ or themes/. Maintenance Mode must be enabled. Existing files are backed up automatically; PHP is syntax-validated before write.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'path' => ['type' => 'string', 'description' => 'Relative path beginning with plugins/ or themes/.', 'minLength' => 1],
+                        'content' => ['type' => 'string', 'description' => 'Complete UTF-8 file contents to write.'],
+                    ],
+                    'required' => ['path', 'content'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => $write_safe,
+            ],
+            [
+                'name' => 'wp_delete_file',
+                'description' => 'Delete one regular file under plugins/ or themes/. Maintenance Mode must be enabled and a backup is created first.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'path' => ['type' => 'string', 'description' => 'Existing file under plugins/ or themes/.', 'minLength' => 1],
+                    ],
+                    'required' => ['path'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => $write_destructive,
+            ],
+            [
+                'name' => 'wp_restore_backup',
+                'description' => 'Restore a file backup previously returned by wp_write_file or wp_delete_file. Maintenance Mode must be enabled.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'backup_id' => ['type' => 'string', 'minLength' => 8],
+                    ],
+                    'required' => ['backup_id'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => $write_safe,
+            ],
+            [
+                'name' => 'wp_activate_plugin',
+                'description' => 'Activate an installed WordPress plugin by plugin file. Maintenance Mode must be enabled.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'plugin' => ['type' => 'string', 'description' => 'Plugin file such as akismet/akismet.php.', 'minLength' => 1],
+                    ],
+                    'required' => ['plugin'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => $write_safe,
+            ],
+            [
+                'name' => 'wp_deactivate_plugin',
+                'description' => 'Deactivate an installed WordPress plugin by plugin file. Maintenance Mode must be enabled.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'plugin' => ['type' => 'string', 'description' => 'Plugin file such as akismet/akismet.php.', 'minLength' => 1],
+                    ],
+                    'required' => ['plugin'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => $write_safe,
+            ],
+            [
                 'name' => 'wp_recent_audit',
                 'description' => 'Return recent WP AI Bridge audit events.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'limit' => [
-                            'type' => 'integer',
-                            'minimum' => 1,
-                            'maximum' => 100,
-                            'default' => 25,
-                        ],
+                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 25],
                     ],
                     'additionalProperties' => false,
                 ],
@@ -174,14 +274,30 @@ final class WPAIB_MCP {
             return self::error($id, -32602, 'Tool name is required.', 400);
         }
 
-        $result = match ($name) {
-            'wp_ping' => self::tool_ping(),
-            'wp_site_info' => self::tool_site_info(),
-            'wp_list_plugins' => self::tool_plugins(),
-            'wp_read_file' => self::tool_read_file($arguments),
-            'wp_recent_audit' => self::tool_audit($arguments),
-            default => new WP_Error('wpaib_unknown_tool', 'Unknown tool.', ['status' => 404]),
-        };
+        $write_tools = ['wp_write_file', 'wp_delete_file', 'wp_restore_backup', 'wp_activate_plugin', 'wp_deactivate_plugin'];
+        if (in_array($name, $write_tools, true) && !WPAIB_Auth::maintenance_enabled()) {
+            $result = new WP_Error(
+                'wpaib_maintenance_disabled',
+                'Maintenance Mode is disabled. Enable it once in Settings → WP AI Bridge to allow continuous theme/plugin modifications.',
+                ['status' => 403]
+            );
+        } else {
+            $result = match ($name) {
+                'wp_ping' => self::tool_ping(),
+                'wp_site_info' => self::tool_site_info(),
+                'wp_list_plugins' => self::tool_plugins(),
+                'wp_list_directory' => self::tool_list_directory($arguments),
+                'wp_search_files' => self::tool_search_files($arguments),
+                'wp_read_file' => self::tool_read_file($arguments),
+                'wp_write_file' => self::tool_write_file($arguments),
+                'wp_delete_file' => self::tool_delete_file($arguments),
+                'wp_restore_backup' => self::tool_restore_backup($arguments),
+                'wp_activate_plugin' => self::tool_activate_plugin($arguments),
+                'wp_deactivate_plugin' => self::tool_deactivate_plugin($arguments),
+                'wp_recent_audit' => self::tool_audit($arguments),
+                default => new WP_Error('wpaib_unknown_tool', 'Unknown tool.', ['status' => 404]),
+            };
+        }
 
         WPAIB_Audit::record('mcp_tool_call', ['tool' => $name, 'ok' => !is_wp_error($result)]);
 
@@ -199,7 +315,8 @@ final class WPAIB_MCP {
             'version' => WPAIB_VERSION,
             'mcp_endpoint' => self::endpoint_url(),
             'auth_method' => WPAIB_Auth::method(),
-            'mode' => 'read-only',
+            'mode' => WPAIB_Auth::maintenance_enabled() ? 'maintenance' : 'read-only',
+            'write_scope' => ['plugins', 'themes'],
             'tools' => array_column(self::tools(), 'name'),
         ];
     }
@@ -214,12 +331,67 @@ final class WPAIB_MCP {
         return $response->get_data();
     }
 
+    private static function tool_list_directory(array $arguments): array|WP_Error {
+        $path = isset($arguments['path']) && is_string($arguments['path']) ? $arguments['path'] : '';
+        $recursive = !empty($arguments['recursive']);
+        $limit = isset($arguments['limit']) ? (int) $arguments['limit'] : 200;
+        return WPAIB_Files::list_directory($path, $recursive, $limit);
+    }
+
+    private static function tool_search_files(array $arguments): array|WP_Error {
+        $query = isset($arguments['query']) && is_string($arguments['query']) ? $arguments['query'] : '';
+        $root = isset($arguments['root']) && is_string($arguments['root']) ? $arguments['root'] : 'plugins';
+        $limit = isset($arguments['limit']) ? (int) $arguments['limit'] : 50;
+        return WPAIB_Files::search($query, $root, $limit);
+    }
+
     private static function tool_read_file(array $arguments): array|WP_Error {
         $path = isset($arguments['path']) && is_string($arguments['path']) ? $arguments['path'] : '';
         if ('' === $path) {
             return new WP_Error('wpaib_missing_path', 'path is required.', ['status' => 400]);
         }
         return WPAIB_Files::read($path);
+    }
+
+    private static function tool_write_file(array $arguments): array|WP_Error {
+        $path = isset($arguments['path']) && is_string($arguments['path']) ? $arguments['path'] : '';
+        $content = isset($arguments['content']) && is_string($arguments['content']) ? $arguments['content'] : null;
+        if ('' === $path || null === $content) {
+            return new WP_Error('wpaib_write_args', 'path and content are required.', ['status' => 400]);
+        }
+        return WPAIB_Maintenance::write_file($path, $content);
+    }
+
+    private static function tool_delete_file(array $arguments): array|WP_Error {
+        $path = isset($arguments['path']) && is_string($arguments['path']) ? $arguments['path'] : '';
+        if ('' === $path) {
+            return new WP_Error('wpaib_delete_args', 'path is required.', ['status' => 400]);
+        }
+        return WPAIB_Maintenance::delete_file($path);
+    }
+
+    private static function tool_restore_backup(array $arguments): array|WP_Error {
+        $backup_id = isset($arguments['backup_id']) && is_string($arguments['backup_id']) ? $arguments['backup_id'] : '';
+        if ('' === $backup_id) {
+            return new WP_Error('wpaib_restore_args', 'backup_id is required.', ['status' => 400]);
+        }
+        return WPAIB_Maintenance::restore_backup($backup_id);
+    }
+
+    private static function tool_activate_plugin(array $arguments): array|WP_Error {
+        $plugin = isset($arguments['plugin']) && is_string($arguments['plugin']) ? $arguments['plugin'] : '';
+        if ('' === $plugin) {
+            return new WP_Error('wpaib_plugin_args', 'plugin is required.', ['status' => 400]);
+        }
+        return WPAIB_Maintenance::activate_plugin($plugin);
+    }
+
+    private static function tool_deactivate_plugin(array $arguments): array|WP_Error {
+        $plugin = isset($arguments['plugin']) && is_string($arguments['plugin']) ? $arguments['plugin'] : '';
+        if ('' === $plugin) {
+            return new WP_Error('wpaib_plugin_args', 'plugin is required.', ['status' => 400]);
+        }
+        return WPAIB_Maintenance::deactivate_plugin($plugin);
     }
 
     private static function tool_audit(array $arguments): array {
@@ -301,7 +473,7 @@ final class WPAIB_MCP {
             'name' => 'wp-ai-bridge',
             'title' => 'WP AI Bridge',
             'version' => WPAIB_VERSION,
-            'description' => 'Guarded WordPress diagnostics bridge.',
+            'description' => 'Guarded WordPress diagnostics and theme/plugin maintenance bridge.',
             'websiteUrl' => home_url('/'),
         ];
     }
