@@ -10,6 +10,12 @@ final class WPAIB_REST {
     }
 
     public static function register_routes(): void {
+        register_rest_route(self::NS, '/ping', [
+            'methods' => WP_REST_Server::READABLE,
+            'callback' => [self::class, 'ping'],
+            'permission_callback' => [self::class, 'can_read'],
+        ]);
+
         register_rest_route(self::NS, '/site-info', [
             'methods' => WP_REST_Server::READABLE,
             'callback' => [self::class, 'site_info'],
@@ -42,8 +48,29 @@ final class WPAIB_REST {
         ]);
     }
 
-    public static function can_read(): bool {
-        return current_user_can('manage_options');
+    public static function can_read(WP_REST_Request $request): bool|WP_Error {
+        return WPAIB_Auth::authorize_read($request);
+    }
+
+    public static function ping(): WP_REST_Response {
+        WPAIB_Audit::record('ping');
+
+        return new WP_REST_Response([
+            'connected' => true,
+            'plugin' => 'WP AI Bridge',
+            'version' => WPAIB_VERSION,
+            'site_url' => home_url('/'),
+            'rest_base' => WPAIB_Auth::connection_url(),
+            'auth_method' => WPAIB_Auth::method(),
+            'https' => is_ssl(),
+            'write_enabled' => '1' === get_option(WPAIB_OPTION_WRITE_ENABLED, '0'),
+            'capabilities' => [
+                'site_info',
+                'list_plugins',
+                'read_file',
+                'read_audit',
+            ],
+        ]);
     }
 
     public static function site_info(): WP_REST_Response {
@@ -90,6 +117,7 @@ final class WPAIB_REST {
     }
 
     public static function audit(): WP_REST_Response {
+        WPAIB_Audit::record('read_audit');
         return new WP_REST_Response(WPAIB_Audit::recent(50));
     }
 }
