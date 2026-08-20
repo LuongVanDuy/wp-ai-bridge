@@ -17,12 +17,6 @@ define('WPAIB_VERSION', '0.6.0');
 define('WPAIB_FILE', __FILE__);
 define('WPAIB_DIR', plugin_dir_path(__FILE__));
 
-register_activation_hook(__FILE__, static function (): void {
-    if (!wp_next_scheduled('wpaib_github_poll')) {
-        wp_schedule_event(time() + 120, 'wpaib_five_minutes', 'wpaib_github_poll');
-    }
-});
-
 register_deactivation_hook(__FILE__, static function (): void {
     wp_clear_scheduled_hook('wpaib_github_poll');
 });
