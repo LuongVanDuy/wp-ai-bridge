@@ -32,9 +32,7 @@ final class WPAIB_Settings {
     }
 
     public static function render(): void {
-        if (!current_user_can('manage_options')) {
-            return;
-        }
+        if (!current_user_can('manage_options')) return;
 
         $token = get_transient(self::token_transient_key());
         if (is_string($token) && '' !== $token) {
@@ -43,83 +41,99 @@ final class WPAIB_Settings {
             $token = '';
         }
 
-        $connection_url = WPAIB_Auth::connection_url();
-        $mcp_url = class_exists('WPAIB_MCP') ? WPAIB_MCP::endpoint_url() : $connection_url . 'mcp';
+        $rest_url = WPAIB_Auth::connection_url();
+        $mcp_url = class_exists('WPAIB_MCP') ? WPAIB_MCP::endpoint_url() : $rest_url . 'mcp';
         $token_exists = WPAIB_Auth::has_token();
         $created_at = WPAIB_Auth::token_created_at();
         $notice = isset($_GET['wpaib_notice']) ? sanitize_key(wp_unslash($_GET['wpaib_notice'])) : '';
+        $update = class_exists('WPAIB_Updater') ? WPAIB_Updater::status(true) : null;
         ?>
-        <div class="wrap">
-            <h1><?php esc_html_e('WP AI Bridge', 'wp-ai-bridge'); ?></h1>
-            <p><?php esc_html_e('Use ChatGPT as the working interface. WordPress only supplies the authenticated tools.', 'wp-ai-bridge'); ?></p>
+        <div class="wrap wpaib-wrap">
+            <style>
+                .wpaib-wrap{max-width:900px}.wpaib-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:18px 0}.wpaib-head h1{margin:0}.wpaib-version{color:#646970}.wpaib-card{background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:20px;margin:14px 0}.wpaib-card h2{margin:0 0 14px}.wpaib-row{display:grid;grid-template-columns:160px 1fr;gap:16px;padding:10px 0;border-top:1px solid #f0f0f1}.wpaib-row:first-of-type{border-top:0}.wpaib-label{font-weight:600}.wpaib-code{width:100%;font-family:monospace}.wpaib-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.wpaib-muted{color:#646970}.wpaib-ok{color:#008a20;font-weight:600}.wpaib-warn{color:#b32d2e;font-weight:600}@media(max-width:782px){.wpaib-row{grid-template-columns:1fr;gap:6px}}
+            </style>
+
+            <div class="wpaib-head">
+                <h1><?php esc_html_e('WP AI Bridge', 'wp-ai-bridge'); ?></h1>
+                <span class="wpaib-version">v<?php echo esc_html(WPAIB_VERSION); ?></span>
+            </div>
 
             <?php if ('token-created' === $notice) : ?>
-                <div class="notice notice-success is-dismissible"><p><?php esc_html_e('A new API token was created. Copy it now; it will not be shown again.', 'wp-ai-bridge'); ?></p></div>
+                <div class="notice notice-success is-dismissible"><p><?php esc_html_e('New token created. Copy it now; it will not be shown again.', 'wp-ai-bridge'); ?></p></div>
             <?php elseif ('token-revoked' === $notice) : ?>
-                <div class="notice notice-success is-dismissible"><p><?php esc_html_e('The API token was revoked.', 'wp-ai-bridge'); ?></p></div>
+                <div class="notice notice-success is-dismissible"><p><?php esc_html_e('Token revoked.', 'wp-ai-bridge'); ?></p></div>
             <?php endif; ?>
 
-            <h2><?php esc_html_e('ChatGPT connection', 'wp-ai-bridge'); ?></h2>
-            <table class="form-table" role="presentation">
-                <tr>
-                    <th scope="row"><?php esc_html_e('MCP URL', 'wp-ai-bridge'); ?></th>
-                    <td><input type="text" class="large-text code" readonly value="<?php echo esc_attr($mcp_url); ?>" onclick="this.select();" /></td>
-                </tr>
-                <tr>
-                    <th scope="row"><?php esc_html_e('REST base URL', 'wp-ai-bridge'); ?></th>
-                    <td><input type="text" class="large-text code" readonly value="<?php echo esc_attr($connection_url); ?>" onclick="this.select();" /></td>
-                </tr>
-                <tr>
-                    <th scope="row"><?php esc_html_e('API token', 'wp-ai-bridge'); ?></th>
-                    <td>
+            <div class="wpaib-card">
+                <h2><?php esc_html_e('Connection', 'wp-ai-bridge'); ?></h2>
+                <div class="wpaib-row">
+                    <div class="wpaib-label">MCP URL</div>
+                    <div><input class="wpaib-code" type="text" readonly value="<?php echo esc_attr($mcp_url); ?>" onclick="this.select();"></div>
+                </div>
+                <div class="wpaib-row">
+                    <div class="wpaib-label">API token</div>
+                    <div>
                         <?php if ('' !== $token) : ?>
-                            <input type="text" class="large-text code" readonly value="<?php echo esc_attr($token); ?>" onclick="this.select();" autocomplete="off" />
-                            <p><strong><?php esc_html_e('Copy this token now. Only its password hash is stored after this page view.', 'wp-ai-bridge'); ?></strong></p>
+                            <input class="wpaib-code" type="text" readonly value="<?php echo esc_attr($token); ?>" onclick="this.select();" autocomplete="off">
+                            <p><strong><?php esc_html_e('Copy this token now.', 'wp-ai-bridge'); ?></strong></p>
                         <?php elseif ($token_exists) : ?>
-                            <p><strong><?php esc_html_e('Configured', 'wp-ai-bridge'); ?></strong><?php echo $created_at ? ' — ' . esc_html($created_at) : ''; ?></p>
+                            <p style="margin-top:0"><span class="wpaib-ok"><?php esc_html_e('Configured', 'wp-ai-bridge'); ?></span><?php echo $created_at ? ' · ' . esc_html($created_at) : ''; ?></p>
                         <?php else : ?>
-                            <p><?php esc_html_e('No API token has been created yet.', 'wp-ai-bridge'); ?></p>
+                            <p style="margin-top:0" class="wpaib-muted"><?php esc_html_e('No token yet.', 'wp-ai-bridge'); ?></p>
                         <?php endif; ?>
-                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <div class="wpaib-actions">
                             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                                <input type="hidden" name="action" value="wpaib_generate_token" />
+                                <input type="hidden" name="action" value="wpaib_generate_token">
                                 <?php wp_nonce_field('wpaib_generate_token'); ?>
-                                <?php submit_button($token_exists ? __('Rotate API token', 'wp-ai-bridge') : __('Generate API token', 'wp-ai-bridge'), 'secondary', 'submit', false); ?>
+                                <?php submit_button($token_exists ? __('Rotate token', 'wp-ai-bridge') : __('Generate token', 'wp-ai-bridge'), 'secondary', 'submit', false); ?>
                             </form>
                             <?php if ($token_exists) : ?>
                                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('<?php echo esc_js(__('Revoke the current API token?', 'wp-ai-bridge')); ?>');">
-                                    <input type="hidden" name="action" value="wpaib_revoke_token" />
+                                    <input type="hidden" name="action" value="wpaib_revoke_token">
                                     <?php wp_nonce_field('wpaib_revoke_token'); ?>
-                                    <?php submit_button(__('Revoke token', 'wp-ai-bridge'), 'delete', 'submit', false); ?>
+                                    <?php submit_button(__('Revoke', 'wp-ai-bridge'), 'link-delete', 'submit', false); ?>
                                 </form>
                             <?php endif; ?>
                         </div>
-                    </td>
-                </tr>
-                <tr>
-                    <th scope="row"><?php esc_html_e('Write scope', 'wp-ai-bridge'); ?></th>
-                    <td>
-                        <strong><?php esc_html_e('Always enabled for authenticated tokens', 'wp-ai-bridge'); ?></strong>
-                        <p class="description"><code>wp-content/plugins/**</code><br><code>wp-content/themes/**</code></p>
-                        <p class="description"><?php esc_html_e('No separate Maintenance Mode is required. Existing files are backed up automatically and PHP writes are syntax-checked.', 'wp-ai-bridge'); ?></p>
-                    </td>
-                </tr>
-                <tr>
-                    <th scope="row"><?php esc_html_e('Hard limits', 'wp-ai-bridge'); ?></th>
-                    <td><?php esc_html_e('No WordPress core writes, no wp-config.php, no arbitrary database access, and no shell commands.', 'wp-ai-bridge'); ?></td>
-                </tr>
-                <tr>
-                    <th scope="row"><?php esc_html_e('Transport security', 'wp-ai-bridge'); ?></th>
-                    <td><?php if (is_ssl()) : ?><strong><?php esc_html_e('HTTPS detected', 'wp-ai-bridge'); ?></strong><?php else : ?><strong style="color:#b32d2e;"><?php esc_html_e('HTTPS not detected. Do not send the API token over plain HTTP.', 'wp-ai-bridge'); ?></strong><?php endif; ?></td>
-                </tr>
-            </table>
+                    </div>
+                </div>
+                <div class="wpaib-row">
+                    <div class="wpaib-label">HTTPS</div>
+                    <div><?php if (is_ssl()) : ?><span class="wpaib-ok">Connected securely</span><?php else : ?><span class="wpaib-warn">HTTPS not detected</span><?php endif; ?></div>
+                </div>
+            </div>
 
-            <h2><?php esc_html_e('How to work', 'wp-ai-bridge'); ?></h2>
-            <p><?php esc_html_e('After the MCP app is connected to ChatGPT, describe the changes in your normal ChatGPT conversation. There is no separate WordPress task-entry screen.', 'wp-ai-bridge'); ?></p>
+            <div class="wpaib-card">
+                <h2><?php esc_html_e('Access', 'wp-ai-bridge'); ?></h2>
+                <div class="wpaib-row">
+                    <div class="wpaib-label"><?php esc_html_e('Write access', 'wp-ai-bridge'); ?></div>
+                    <div><strong><?php esc_html_e('Always available with a valid token', 'wp-ai-bridge'); ?></strong><br><span class="wpaib-muted"><code>wp-content/plugins/**</code> · <code>wp-content/themes/**</code></span></div>
+                </div>
+                <div class="wpaib-row">
+                    <div class="wpaib-label"><?php esc_html_e('Protection', 'wp-ai-bridge'); ?></div>
+                    <div class="wpaib-muted"><?php esc_html_e('Automatic backup before overwrite/delete; PHP syntax validation; no core, wp-config.php, shell, or arbitrary database access.', 'wp-ai-bridge'); ?></div>
+                </div>
+            </div>
 
-            <h2><?php esc_html_e('REST test', 'wp-ai-bridge'); ?></h2>
-            <pre><code>Authorization: Bearer YOUR_TOKEN
-GET <?php echo esc_html($connection_url . 'ping'); ?></code></pre>
+            <div class="wpaib-card">
+                <h2><?php esc_html_e('Updates', 'wp-ai-bridge'); ?></h2>
+                <?php if (!is_array($update)) : ?>
+                    <p class="wpaib-warn"><?php esc_html_e('Update checker is unavailable.', 'wp-ai-bridge'); ?></p>
+                <?php elseif (!empty($update['error'])) : ?>
+                    <p class="wpaib-warn"><?php esc_html_e('Could not check GitHub:', 'wp-ai-bridge'); ?> <?php echo esc_html((string) $update['error']); ?></p>
+                <?php elseif (!empty($update['update_available'])) : ?>
+                    <div class="wpaib-row">
+                        <div class="wpaib-label"><?php esc_html_e('New version', 'wp-ai-bridge'); ?></div>
+                        <div><strong>v<?php echo esc_html((string) $update['remote_version']); ?></strong> <span class="wpaib-muted">(installed v<?php echo esc_html(WPAIB_VERSION); ?>)</span></div>
+                    </div>
+                    <p><a class="button button-primary" href="<?php echo esc_url(WPAIB_Updater::update_url()); ?>"><?php esc_html_e('Update now', 'wp-ai-bridge'); ?></a></p>
+                <?php else : ?>
+                    <p><span class="wpaib-ok"><?php esc_html_e('Up to date', 'wp-ai-bridge'); ?></span> <span class="wpaib-muted">· GitHub main v<?php echo esc_html((string) ($update['remote_version'] ?? WPAIB_VERSION)); ?></span></p>
+                <?php endif; ?>
+                <p class="wpaib-muted" style="margin-bottom:0"><?php esc_html_e('This check runs when this page is loaded. Future updates require the Version field in wp-ai-bridge.php to be increased on GitHub.', 'wp-ai-bridge'); ?></p>
+            </div>
+
+            <p class="wpaib-muted"><?php esc_html_e('After connecting the MCP URL to ChatGPT, use your normal ChatGPT conversation to describe what should be inspected or changed. No separate task UI is needed here.', 'wp-ai-bridge'); ?></p>
         </div>
         <?php
     }
