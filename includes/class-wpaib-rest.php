@@ -54,6 +54,7 @@ final class WPAIB_REST {
 
     public static function ping(): WP_REST_Response {
         WPAIB_Audit::record('ping');
+        $maintenance = WPAIB_Auth::maintenance_enabled();
 
         return new WP_REST_Response([
             'connected' => true,
@@ -61,14 +62,23 @@ final class WPAIB_REST {
             'version' => WPAIB_VERSION,
             'site_url' => home_url('/'),
             'rest_base' => WPAIB_Auth::connection_url(),
+            'mcp_endpoint' => class_exists('WPAIB_MCP') ? WPAIB_MCP::endpoint_url() : null,
             'auth_method' => WPAIB_Auth::method(),
             'https' => is_ssl(),
-            'write_enabled' => '1' === get_option(WPAIB_OPTION_WRITE_ENABLED, '0'),
+            'mode' => $maintenance ? 'maintenance' : 'read-only',
+            'write_enabled' => $maintenance,
+            'write_scope' => ['plugins', 'themes'],
             'capabilities' => [
                 'site_info',
                 'list_plugins',
+                'list_directory',
+                'search_files',
                 'read_file',
                 'read_audit',
+                'write_theme_plugin_files' => $maintenance,
+                'delete_theme_plugin_files' => $maintenance,
+                'restore_file_backup' => $maintenance,
+                'activate_deactivate_plugins' => $maintenance,
             ],
         ]);
     }
@@ -87,8 +97,10 @@ final class WPAIB_REST {
                 'template' => get_template(),
                 'version' => wp_get_theme()->get('Version'),
             ],
-            'write_enabled' => '1' === get_option(WPAIB_OPTION_WRITE_ENABLED, '0'),
-            'allowed_roots' => array_keys(WPAIB_Files::allowed_roots()),
+            'mode' => WPAIB_Auth::maintenance_enabled() ? 'maintenance' : 'read-only',
+            'write_enabled' => WPAIB_Auth::maintenance_enabled(),
+            'write_scope' => ['plugins', 'themes'],
+            'read_roots' => array_keys(WPAIB_Files::allowed_roots()),
         ]);
     }
 

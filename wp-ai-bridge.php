@@ -2,8 +2,8 @@
 /**
  * Plugin Name: WP AI Bridge
  * Plugin URI: https://github.com/LuongVanDuy/wp-ai-bridge
- * Description: Guarded REST bridge for authorized AI-assisted WordPress diagnostics and maintenance.
- * Version: 0.2.0-dev
+ * Description: Guarded REST and MCP bridge for authorized AI-assisted WordPress diagnostics and theme/plugin maintenance.
+ * Version: 0.3.0-dev
  * Requires at least: 6.4
  * Requires PHP: 8.0
  * Author: LuongVanDuy
@@ -13,7 +13,7 @@
 
 defined('ABSPATH') || exit;
 
-define('WPAIB_VERSION', '0.2.0-dev');
+define('WPAIB_VERSION', '0.3.0-dev');
 define('WPAIB_FILE', __FILE__);
 define('WPAIB_DIR', plugin_dir_path(__FILE__));
 
@@ -32,7 +32,9 @@ add_action('plugins_loaded', static function (): void {
         'includes/class-wpaib-audit.php',
         'includes/class-wpaib-auth.php',
         'includes/class-wpaib-files.php',
+        'includes/class-wpaib-maintenance.php',
         'includes/class-wpaib-rest.php',
+        'includes/class-wpaib-mcp.php',
         'includes/class-wpaib-settings.php',
     ];
 
@@ -51,5 +53,8 @@ add_action('plugins_loaded', static function (): void {
     }
     if (class_exists('WPAIB_REST')) {
         WPAIB_REST::boot();
+    }
+    if (class_exists('WPAIB_MCP')) {
+        WPAIB_MCP::boot();
     }
 });
