@@ -80,6 +80,13 @@ final class WPAIB_Empty_Repo_Bootstrap {
             if (!is_array($bootstrap_data)) $bootstrap_data = [];
 
             if ($status < 200 || $status >= 300) {
+                $github_message = (string) ($bootstrap_data['message'] ?? '');
+                if (403 === $status && str_contains(strtolower($github_message), 'resource not accessible by integration')) {
+                    $accepted = trim((string) wp_remote_retrieve_header($bootstrap, 'x-accepted-github-permissions'));
+                    $hint = 'GitHub App cannot write to this repository. In GitHub App settings set Repository permissions > Contents to Read and write, install/configure the App for this repository (or All repositories), approve the updated permissions, then Disconnect and Connect GitHub again in WP AI Bridge.';
+                    if ('' !== $accepted) $hint .= ' GitHub requires: ' . $accepted . '.';
+                    $bootstrap['body'] = wp_json_encode(['message' => $hint]);
+                }
                 return $bootstrap;
             }
 
