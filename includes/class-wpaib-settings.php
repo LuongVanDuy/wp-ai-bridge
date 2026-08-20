@@ -55,6 +55,9 @@ final class WPAIB_Settings {
         self::require_ajax_admin();
         $result = WPAIB_GitHub_OAuth::poll_device_flow(get_current_user_id());
         if (is_wp_error($result)) wp_send_json_error(['message' => $result->get_error_message()], 400);
+        if (!empty($result['connected'])) {
+            foreach (['wpaib_github_repo', 'wpaib_github_branch', 'wpaib_github_token', 'wpaib_github_last_remote_sha', 'wpaib_github_last_sync_at', 'wpaib_github_last_error'] as $option) delete_option($option);
+        }
         wp_send_json_success($result);
     }
 
