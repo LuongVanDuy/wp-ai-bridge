@@ -8,18 +8,16 @@ final class WPAIB_Fleet_Client {
     private const OPT_SITE_SECRET = 'wpaib_fleet_client_site_secret';
     private const OPT_REPO = 'wpaib_fleet_client_repo';
     private const OPT_BRANCH = 'wpaib_fleet_client_branch';
-    private const OPT_ACCESS_TOKEN = 'wpaib_fleet_client_access_token';
-    private const OPT_ACCESS_EXPIRES = 'wpaib_fleet_client_access_expires';
+    private const PROXY_TOKEN = 'wpaib_fleet_proxy';
 
     public static function boot(): void {
-        add_action('admin_init', [self::class, 'maybe_refresh_github_connection'], 1);
-        add_action('wpaib_github_poll', [self::class, 'maybe_refresh_github_connection'], 1);
+        add_filter('pre_http_request', [self::class, 'proxy_github_request'], 10, 3);
     }
 
     public static function connected(): bool {
         return '' !== self::hub()
             && '' !== self::site_id()
-            && '' !== WPAIB_Crypto::decrypt((string) get_option(self::OPT_SITE_SECRET, ''))
+            && '' !== self::site_secret()
             && '' !== (string) get_option(self::OPT_REPO, '');
     }
 
@@ -30,7 +28,6 @@ final class WPAIB_Fleet_Client {
             'site_id' => self::site_id(),
             'repo' => (string) get_option(self::OPT_REPO, ''),
             'branch' => (string) get_option(self::OPT_BRANCH, 'main'),
-            'token_expires' => (int) get_option(self::OPT_ACCESS_EXPIRES, 0),
         ];
     }
 
@@ -67,96 +64,96 @@ final class WPAIB_Fleet_Client {
         $data = self::decode_response($response, 'Fleet enrollment failed.');
         if (is_wp_error($data)) return $data;
 
-        $secret = (string) ($data['site_secret'] ?? '');
-        $repo = (string) ($data['repo'] ?? '');
-        $branch = (string) ($data['branch'] ?? 'main');
+        $secret = trim((string) ($data['site_secret'] ?? ''));
+        $repo = trim((string) ($data['repo'] ?? ''));
+        $branch = trim((string) ($data['branch'] ?? 'main'));
         if ('' === $secret || !preg_match('#^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$#', $repo)) {
             return new WP_Error('wpaib_fleet_enroll_response', 'Fleet Hub returned an invalid enrollment response.');
         }
 
         $encrypted = WPAIB_Crypto::encrypt($secret);
         if (is_wp_error($encrypted)) return $encrypted;
+        $sync_token = self::encrypt_sync_token(self::PROXY_TOKEN);
+        if (is_wp_error($sync_token)) return $sync_token;
+
         update_option(self::OPT_HUB, $hub, false);
         update_option(self::OPT_SITE_ID, $site_id, false);
         update_option(self::OPT_SITE_SECRET, $encrypted, false);
         update_option(self::OPT_REPO, $repo, false);
         update_option(self::OPT_BRANCH, '' !== $branch ? $branch : 'main', false);
-        self::clear_access_token();
 
-        $token = self::access_token(true);
-        if (is_wp_error($token)) return $token;
-        $configured = WPAIB_GitHub_Sync::save_connection($repo, '' !== $branch ? $branch : 'main', $token);
-        if (is_wp_error($configured)) return $configured;
+        update_option('wpaib_github_repo', $repo, false);
+        update_option('wpaib_github_branch', '' !== $branch ? $branch : 'main', false);
+        update_option('wpaib_github_token', $sync_token, false);
+        delete_option('wpaib_github_last_remote_sha');
+        delete_option('wpaib_github_last_sync_at');
+        delete_option('wpaib_github_last_error');
 
         WPAIB_Audit::record('fleet_client_connected', ['hub' => $hub, 'repo' => $repo]);
         return ['repo' => $repo, 'branch' => '' !== $branch ? $branch : 'main'];
     }
 
     public static function disconnect(): void {
-        foreach ([self::OPT_HUB, self::OPT_SITE_SECRET, self::OPT_REPO, self::OPT_BRANCH, self::OPT_ACCESS_TOKEN, self::OPT_ACCESS_EXPIRES] as $option) {
-            delete_option($option);
-        }
-        foreach (['wpaib_github_repo', 'wpaib_github_branch', 'wpaib_github_token', 'wpaib_github_last_remote_sha', 'wpaib_github_last_sync_at', 'wpaib_github_last_error'] as $option) {
-            delete_option($option);
-        }
+        foreach ([self::OPT_HUB, self::OPT_SITE_SECRET, self::OPT_REPO, self::OPT_BRANCH] as $option) delete_option($option);
+        foreach (['wpaib_github_repo', 'wpaib_github_branch', 'wpaib_github_token', 'wpaib_github_last_remote_sha', 'wpaib_github_last_sync_at', 'wpaib_github_last_error'] as $option) delete_option($option);
         WPAIB_Audit::record('fleet_client_disconnected');
     }
 
-    public static function maybe_refresh_github_connection(): void {
-        if (!self::connected()) return;
-        $expires = (int) get_option(self::OPT_ACCESS_EXPIRES, 0);
-        if ($expires > time() + 600 && '' !== (string) get_option('wpaib_github_token', '')) return;
+    public static function proxy_github_request($preempt, array $args, string $url) {
+        if (!self::connected() || !str_starts_with($url, 'https://api.github.com/')) return $preempt;
 
-        $token = self::access_token(true);
-        if (is_wp_error($token)) {
-            update_option('wpaib_github_last_error', sanitize_text_field($token->get_error_message()), false);
-            return;
+        $authorization = '';
+        if (isset($args['headers']) && is_array($args['headers'])) {
+            foreach ($args['headers'] as $name => $value) {
+                if ('authorization' === strtolower((string) $name)) {
+                    $authorization = trim((string) $value);
+                    break;
+                }
+            }
         }
-        $repo = (string) get_option(self::OPT_REPO, '');
-        $branch = (string) get_option(self::OPT_BRANCH, 'main');
-        $saved = WPAIB_GitHub_Sync::save_connection($repo, '' !== $branch ? $branch : 'main', $token);
-        if (is_wp_error($saved)) update_option('wpaib_github_last_error', sanitize_text_field($saved->get_error_message()), false);
-    }
+        if ('Bearer ' . self::PROXY_TOKEN !== $authorization) return $preempt;
 
-    public static function access_token(bool $force = false): string|WP_Error {
-        if (!self::connected()) return new WP_Error('wpaib_fleet_not_connected', 'This site is not connected to a Fleet Hub.');
-
-        $expires = (int) get_option(self::OPT_ACCESS_EXPIRES, 0);
-        $cached = WPAIB_Crypto::decrypt((string) get_option(self::OPT_ACCESS_TOKEN, ''));
-        if (!$force && '' !== $cached && $expires > time() + 300) return $cached;
-
-        $secret = WPAIB_Crypto::decrypt((string) get_option(self::OPT_SITE_SECRET, ''));
+        $secret = self::site_secret();
         if ('' === $secret) return new WP_Error('wpaib_fleet_secret', 'Fleet site credential is unavailable.');
 
-        $response = wp_remote_post(self::hub() . 'token', [
-            'timeout' => 30,
+        $endpoint = substr($url, strlen('https://api.github.com'));
+        $method = strtoupper((string) ($args['method'] ?? 'GET'));
+        $body = isset($args['body']) && is_string($args['body']) ? $args['body'] : null;
+
+        $response = wp_remote_post(self::hub() . 'github', [
+            'timeout' => max(30, (int) ($args['timeout'] ?? 30)),
             'headers' => [
                 'Authorization' => 'Bearer ' . $secret,
                 'Accept' => 'application/json',
                 'Content-Type' => 'application/json',
                 'User-Agent' => 'WP-AI-Bridge-Fleet/' . WPAIB_VERSION,
             ],
-            'body' => wp_json_encode(['site_id' => self::site_id()]),
+            'body' => wp_json_encode([
+                'site_id' => self::site_id(),
+                'method' => $method,
+                'endpoint' => $endpoint,
+                'body' => $body,
+            ]),
         ]);
-        $data = self::decode_response($response, 'Unable to refresh Fleet GitHub token.');
-        if (is_wp_error($data)) return $data;
+        if (is_wp_error($response)) return $response;
 
-        $token = (string) ($data['token'] ?? '');
-        $repo = (string) ($data['repo'] ?? '');
-        $branch = (string) ($data['branch'] ?? 'main');
-        if ('' === $token) return new WP_Error('wpaib_fleet_token_empty', 'Fleet Hub did not return a GitHub token.');
-        if ($repo !== (string) get_option(self::OPT_REPO, '')) {
-            return new WP_Error('wpaib_fleet_repo_changed', 'Fleet Hub repository does not match this site registration. Reconnect the site.');
+        $hub_status = (int) wp_remote_retrieve_response_code($response);
+        $raw = (string) wp_remote_retrieve_body($response);
+        $data = '' !== $raw ? json_decode($raw, true) : [];
+        if (!is_array($data)) $data = [];
+        if ($hub_status < 200 || $hub_status >= 300) {
+            return new WP_Error('wpaib_fleet_proxy_http_' . $hub_status, (string) ($data['message'] ?? $data['data']['message'] ?? 'Fleet Hub GitHub proxy failed.'));
         }
 
-        $encrypted = WPAIB_Crypto::encrypt($token);
-        if (is_wp_error($encrypted)) return $encrypted;
-        $expires_at = strtotime((string) ($data['expires_at'] ?? ''));
-        if (false === $expires_at || $expires_at <= time()) $expires_at = time() + 3300;
-        update_option(self::OPT_ACCESS_TOKEN, $encrypted, false);
-        update_option(self::OPT_ACCESS_EXPIRES, $expires_at, false);
-        if ('' !== $branch) update_option(self::OPT_BRANCH, $branch, false);
-        return $token;
+        $status = (int) ($data['status'] ?? 500);
+        $body_out = (string) ($data['body'] ?? '');
+        return [
+            'headers' => [],
+            'body' => $body_out,
+            'response' => ['code' => $status, 'message' => ''],
+            'cookies' => [],
+            'filename' => null,
+        ];
     }
 
     private static function parse_fleet_key(string $fleet_key): array|WP_Error {
@@ -187,8 +184,7 @@ final class WPAIB_Fleet_Client {
         $data = '' !== $raw ? json_decode($raw, true) : [];
         if (!is_array($data)) $data = [];
         if ($status >= 200 && $status < 300) return $data;
-        $message = (string) ($data['message'] ?? $data['data']['message'] ?? $fallback);
-        return new WP_Error('wpaib_fleet_http_' . $status, $message, ['status' => $status]);
+        return new WP_Error('wpaib_fleet_http_' . $status, (string) ($data['message'] ?? $data['data']['message'] ?? $fallback), ['status' => $status]);
     }
 
     private static function hub(): string {
@@ -199,9 +195,32 @@ final class WPAIB_Fleet_Client {
         return trim((string) get_option(self::OPT_SITE_ID, ''));
     }
 
-    private static function clear_access_token(): void {
-        delete_option(self::OPT_ACCESS_TOKEN);
-        delete_option(self::OPT_ACCESS_EXPIRES);
+    private static function site_secret(): string {
+        return WPAIB_Crypto::decrypt((string) get_option(self::OPT_SITE_SECRET, ''));
+    }
+
+    private static function encrypt_sync_token(string $token): string|WP_Error {
+        $key = hash('sha256', wp_salt('auth'), true);
+        if (function_exists('sodium_crypto_secretbox')) {
+            try {
+                $nonce = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+                return 'sodium:' . base64_encode($nonce . sodium_crypto_secretbox($token, $nonce, $key));
+            } catch (Throwable $error) {
+                return new WP_Error('wpaib_fleet_encrypt', 'Unable to prepare Fleet proxy token.');
+            }
+        }
+        if (function_exists('openssl_encrypt')) {
+            try {
+                $iv = random_bytes(12);
+            } catch (Throwable $error) {
+                return new WP_Error('wpaib_fleet_encrypt', 'Unable to prepare Fleet proxy token.');
+            }
+            $tag = '';
+            $cipher = openssl_encrypt($token, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+            if (false === $cipher) return new WP_Error('wpaib_fleet_encrypt', 'Unable to prepare Fleet proxy token.');
+            return 'openssl:' . base64_encode($iv . $tag . $cipher);
+        }
+        return new WP_Error('wpaib_fleet_encrypt_unavailable', 'Server requires Sodium or OpenSSL.');
     }
 
     private static function base64url_decode(string $value): string|false {

@@ -1,19 +1,48 @@
 # WP AI Bridge
 
-WP AI Bridge keeps the code that matters on WordPress sites in GitHub so ChatGPT web can read and edit projects through the normal GitHub connector.
+WP AI Bridge keeps the WordPress source code that matters in GitHub so ChatGPT web can read and edit each website through the normal GitHub connector.
 
-## How it works
+## v0.8 workflow
 
 ```text
-WordPress site(s) <-> GitHub project repos <-> ChatGPT web
-                         ^
-                         |
-                    Fleet Hub
+WordPress sites -> Fleet Hub -> GitHub repos -> ChatGPT web
 ```
 
-The plugin pushes the live project source to GitHub. ChatGPT reads and edits that repository. WP AI Bridge then checks the configured GitHub branch and deploys new commits back to WordPress.
+The Hub connects to GitHub once with OAuth Device Flow. Client sites never receive the Hub's GitHub access token. They authenticate to the Hub with a site-specific Fleet credential, and the Hub proxies GitHub requests only to the repository assigned to that site.
 
-Version 0.7 adds **Fleet Mode** for people managing many WordPress sites. One Hub holds the GitHub App credentials; client sites use a short Fleet Key once and never need their own GitHub PAT.
+## Simple setup
+
+### Hub
+
+1. Create one GitHub OAuth App and enable **Device Flow**.
+2. Paste its public **Client ID** into WP AI Bridge once.
+3. Click **Connect GitHub**.
+4. GitHub shows a short verification code; approve it at `https://github.com/login/device`.
+5. Generate a Fleet Key.
+
+After the Client ID is configured, the Hub UI is just **Connect GitHub** / connection status.
+
+The OAuth App should request the `repo` scope. WP AI Bridge uses that authorization to create private project repositories and read/write their contents.
+
+The Client ID is not a secret. It can also be supplied with the `WPAIB_GITHUB_OAUTH_CLIENT_ID` constant so the Client ID field never appears in the UI.
+
+### Client websites
+
+On every other WordPress site:
+
+1. Install WP AI Bridge.
+2. Open **Settings -> WP AI Bridge**.
+3. Paste the Fleet Key.
+4. Click **Connect & Sync**.
+
+The same Fleet Key can enroll multiple sites for seven days, or until it is rotated/revoked.
+
+Each site receives its own private GitHub repository automatically, normally named from the domain:
+
+```text
+example.com -> wp-example-com
+shop.example.net -> wp-shop-example-net
+```
 
 ## Synced scope
 
@@ -23,153 +52,53 @@ WP AI Bridge syncs only:
 - the parent theme when a child theme is active;
 - active plugins.
 
-It intentionally does **not** push:
+It intentionally excludes:
 
-- Media Library / `wp-content/uploads`;
+- `wp-content/uploads` / Media Library;
 - WordPress core;
 - `wp-config.php`;
 - WP AI Bridge itself;
 - cache directories;
 - logs and backups;
-- `.env`, private keys, database dumps, archives;
+- `.env`, private keys, database dumps and archives;
 - `node_modules`;
 - individual files larger than 5 MiB.
 
-A small `.wpaib/site.json` manifest is added to each project repository so an AI client can identify the WordPress site, active theme, active plugins, and sync scope.
-
-## Fleet Mode
-
-### 1. Choose one Hub site
-
-Install WP AI Bridge on one HTTPS WordPress site that will act as the Fleet Hub.
-
-Create a GitHub App and install it on the GitHub account or organization that will own the project repositories.
-
-Recommended GitHub App repository permissions:
-
-- **Contents: Read and write** — required for source sync;
-- **Administration: Read and write** — required when an organization installation should create repositories automatically.
-
-For the simplest fleet setup, install the GitHub App for **All repositories**.
-
-On **Settings → WP AI Bridge → Fleet Hub — configure once**, enter:
-
-- GitHub App ID;
-- GitHub App Installation ID;
-- GitHub App private key.
-
-The private key is encrypted before it is stored in WordPress.
-
-### 2. Repository provisioning
-
-For a GitHub **organization**, the Hub first tries to create repositories using the GitHub App installation itself.
-
-For a GitHub **personal account**, GitHub does not allow an installation access token to create a repository for the authenticated user. In that case, configure one optional **Provisioning token** on the Hub. This token is kept only on the Hub and is never sent to client WordPress sites.
-
-Repositories are private by default and named from the site hostname, for example:
-
-```text
-longkhai.com -> wp-longkhai-com
-shop.example.com -> wp-shop-example-com
-```
-
-### 3. Generate one Fleet Key
-
-On the Hub, click **Generate 24-hour Fleet Key**.
-
-A Fleet Key contains the Hub enrollment URL plus a short-lived enrollment code. The same key can be used to enroll multiple sites while it is valid. It can also be revoked immediately from the Hub.
-
-### 4. Connect client sites
-
-On each normal WordPress site:
-
-1. install/update WP AI Bridge;
-2. open **Settings → WP AI Bridge**;
-3. paste the Fleet Key;
-4. click **Connect & Sync**.
-
-The Hub then:
-
-1. identifies or creates that site's dedicated repository;
-2. creates a separate site credential;
-3. mints a GitHub App installation token restricted to that repository;
-4. returns the short-lived token to the client site.
-
-Each client stores its site credential and GitHub token encrypted. GitHub installation tokens are refreshed automatically before they expire.
-
-No per-site GitHub PAT or manual repository entry is required in Fleet Mode.
-
-## Direct GitHub fallback
-
-For a small number of sites, **Advanced → Direct GitHub connection** still supports the v0.6 flow using:
-
-- `owner/repository`;
-- branch;
-- a fine-grained GitHub token with **Contents: Read and write**.
-
-Direct mode is kept only as a fallback. Saving a direct connection disconnects Fleet on that site.
-
-## Repository layout
-
-A synced site repository looks like:
-
-```text
-.wpaib/
-  site.json
-themes/
-  active-theme/
-  parent-theme/
-plugins/
-  active-plugin-a/
-  active-plugin-b/
-```
+A small `.wpaib/site.json` manifest is added to each project repository.
 
 ## ChatGPT workflow
 
-Once project repositories are visible to the ChatGPT GitHub connector:
+Once the project repositories are visible to the GitHub connector:
 
 ```text
 You ask ChatGPT to change a site
-        ↓
+        |
+        v
 ChatGPT reads/edits that site's GitHub repository
-        ↓
-GitHub receives a new commit
-        ↓
-WP AI Bridge notices the branch changed
-        ↓
-Changed theme/plugin files are deployed
+        |
+        v
+WP AI Bridge notices the new commit
+        |
+        v
+Changed theme/plugin files are deployed to WordPress
 ```
 
-WP AI Bridge polls the configured branch about every five minutes through WP-Cron. Actual timing depends on WordPress traffic because WP-Cron is request-driven.
+WP AI Bridge checks the configured branch about every five minutes using WP-Cron. Actual timing depends on WordPress traffic.
 
-## Deploy safety
+## Security model
 
-GitHub-to-WordPress deploys are hard-scoped to:
-
-```text
-wp-content/themes/**
-wp-content/plugins/**
-```
-
-For changed files, WP AI Bridge:
-
-- rejects path traversal and symlink escapes;
-- blocks sensitive/server configuration file types;
-- creates a backup before overwrite/delete;
-- parses PHP with `TOKEN_PARSE` before deployment;
-- invalidates OPcache for changed PHP files when available;
-- records actions in the audit log.
-
-No arbitrary database queries, WordPress core writes, or shell commands are exposed.
-
-## Secret storage
-
-WP AI Bridge encrypts stored GitHub App private keys, Fleet site credentials, provisioning tokens, and short-lived access tokens using Sodium when available, with AES-256-GCM/OpenSSL as a fallback.
-
-The Hub stores client site secrets only as WordPress password hashes.
+- The GitHub OAuth token is encrypted at rest and remains only on the Hub.
+- Client sites get a separate high-entropy Fleet credential, not the GitHub token.
+- Hub proxy requests are restricted to the GitHub repository assigned to the authenticated site.
+- GitHub methods exposed through the Fleet proxy are limited to the methods required by the sync engine.
+- Writes remain hard-scoped to `wp-content/themes/**` and `wp-content/plugins/**`.
+- PHP is parsed with `TOKEN_PARSE` before deployment.
+- Existing files are backed up before overwrite/delete.
+- OPcache is invalidated for changed PHP files when available.
+- WordPress core, arbitrary database access and shell commands are not exposed.
 
 ## Plugin updates
 
-The settings page checks `LuongVanDuy/wp-ai-bridge` `main` for newer WP AI Bridge versions. If a newer version exists, the normal WordPress plugin upgrader can install it directly from GitHub.
+The plugin checks `LuongVanDuy/wp-ai-bridge` `main` for newer versions and injects updates into the normal WordPress Plugins screen. GitHub ZIP normalization preserves the currently installed plugin directory so update operations retain the plugin activation path.
 
-The project is intended only for WordPress installations and GitHub repositories you own or are authorized to administer.
+The project is intended only for WordPress installations and GitHub accounts you own or are authorized to administer.
