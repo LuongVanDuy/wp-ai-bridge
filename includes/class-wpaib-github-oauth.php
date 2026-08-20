@@ -218,7 +218,21 @@ final class WPAIB_GitHub_OAuth {
             $data['_http_status'] = $status;
             return $data;
         }
-        return new WP_Error('wpaib_github_http_' . $status, (string) ($data['message'] ?? 'GitHub API request failed.'), ['status' => $status]);
+
+        $message = (string) ($data['message'] ?? 'GitHub API request failed.');
+        if (403 === $status && str_contains(strtolower($message), 'resource not accessible by integration')) {
+            $accepted = trim((string) wp_remote_retrieve_header($response, 'x-accepted-github-permissions'));
+            if (str_contains($accepted, 'administration=write')) {
+                $message = 'GitHub App cannot create this repository. Set Repository permissions > Administration to Read and write, install/configure the App for your GitHub account, approve updated permissions, then Disconnect and Connect GitHub again.';
+            } elseif (str_contains($accepted, 'contents=write')) {
+                $message = 'GitHub App cannot write repository contents. Set Repository permissions > Contents to Read and write, install/configure the App for this repository (or All repositories), approve updated permissions, then Disconnect and Connect GitHub again.';
+            } else {
+                $message = 'GitHub App does not have enough permission for this action. Grant the requested repository permission, ensure the App is installed for this repository/account, approve updated permissions, then Disconnect and Connect GitHub again.';
+                if ('' !== $accepted) $message .= ' GitHub requires: ' . $accepted . '.';
+            }
+        }
+
+        return new WP_Error('wpaib_github_http_' . $status, $message, ['status' => $status]);
     }
 
     private static function access_token(): string {

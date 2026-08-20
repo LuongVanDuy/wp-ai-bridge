@@ -3,7 +3,7 @@
  * Plugin Name: WP AI Bridge
  * Plugin URI: https://github.com/LuongVanDuy/wp-ai-bridge
  * Description: Connect WordPress directly to GitHub so ChatGPT can read and edit the active theme/plugin source through a project repository.
- * Version: 0.9.2
+ * Version: 0.9.3
  * Requires at least: 6.4
  * Requires PHP: 8.0
  * Author: LuongVanDuy
@@ -13,7 +13,7 @@
 
 defined('ABSPATH') || exit;
 
-define('WPAIB_VERSION', '0.9.2');
+define('WPAIB_VERSION', '0.9.3');
 define('WPAIB_FILE', __FILE__);
 define('WPAIB_DIR', plugin_dir_path(__FILE__));
 define('WPAIB_GITHUB_OAUTH_CLIENT_ID', 'Iv23linx1uF99L7pkGX9');
