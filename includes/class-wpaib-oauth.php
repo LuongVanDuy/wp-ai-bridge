@@ -42,10 +42,6 @@ final class WPAIB_OAuth {
         return home_url('/.well-known/oauth-protected-resource');
     }
 
-    public static function authorization_metadata_url(): string {
-        return home_url('/.well-known/oauth-authorization-server');
-    }
-
     public static function protected_resource_metadata(): array {
         return [
             'resource' => class_exists('WPAIB_MCP') ? WPAIB_MCP::endpoint_url() : rest_url('wp-ai-bridge/v1/mcp'),
@@ -103,18 +99,13 @@ final class WPAIB_OAuth {
     public static function maybe_serve_well_known($wp): void {
         if (!is_object($wp) || !isset($wp->request)) return;
         $request = trim((string) $wp->request, '/');
-        if ('.well-known/oauth-protected-resource' === $request) {
-            self::send_json(self::protected_resource_metadata());
-        }
-        if ('.well-known/oauth-authorization-server' === $request) {
-            self::send_json(self::authorization_server_metadata());
-        }
+        if ('.well-known/oauth-protected-resource' === $request) self::send_json(self::protected_resource_metadata());
+        if ('.well-known/oauth-authorization-server' === $request) self::send_json(self::authorization_server_metadata());
     }
 
     public static function add_auth_challenge($response, $server, $request) {
         if (!$response instanceof WP_REST_Response || !$request instanceof WP_REST_Request) return $response;
-        $route = $request->get_route();
-        if (401 === $response->get_status() && str_starts_with($route, '/wp-ai-bridge/v1/')) {
+        if (401 === $response->get_status() && str_starts_with($request->get_route(), '/wp-ai-bridge/v1/')) {
             $response->header('WWW-Authenticate', self::challenge_header());
         }
         return $response;
@@ -124,23 +115,23 @@ final class WPAIB_OAuth {
         return 'Bearer resource_metadata="' . esc_url_raw(self::protected_resource_url()) . '", scope="' . self::SCOPE . '"';
     }
 
-    public static function register_client(WP_REST_Request $request): WP_REST_Response|WP_Error {
+    public static function register_client(WP_REST_Request $request): WP_REST_Response {
         $body = $request->get_json_params();
         if (!is_array($body)) $body = $request->get_params();
 
         $redirect_uris = isset($body['redirect_uris']) && is_array($body['redirect_uris']) ? array_values($body['redirect_uris']) : [];
-        if (!$redirect_uris || count($redirect_uris) > 10) return self::oauth_error('invalid_client_metadata', 'One or more redirect_uris are required.', 400);
+        if (!$redirect_uris || count($redirect_uris) > 10) return self::oauth_error_response('invalid_client_metadata', 'One or more redirect_uris are required.', 400);
 
         $valid_redirects = [];
         foreach ($redirect_uris as $uri) {
             if (!is_string($uri) || !self::allowed_redirect_uri($uri)) {
-                return self::oauth_error('invalid_redirect_uri', 'Only HTTPS OpenAI/ChatGPT redirect URIs are allowed.', 400);
+                return self::oauth_error_response('invalid_redirect_uri', 'Only HTTPS OpenAI/ChatGPT redirect URIs are allowed.', 400);
             }
             $valid_redirects[] = esc_url_raw($uri);
         }
 
         $auth_method = isset($body['token_endpoint_auth_method']) ? (string) $body['token_endpoint_auth_method'] : 'none';
-        if ('none' !== $auth_method) return self::oauth_error('invalid_client_metadata', 'token_endpoint_auth_method must be none.', 400);
+        if ('none' !== $auth_method) return self::oauth_error_response('invalid_client_metadata', 'token_endpoint_auth_method must be none.', 400);
 
         $client_id = 'wpaib_client_' . bin2hex(random_bytes(18));
         $clients = self::clients();
@@ -170,19 +161,19 @@ final class WPAIB_OAuth {
             exit;
         }
         if (!current_user_can('manage_options')) {
-            wp_die(esc_html__('Administrator permission is required to authorize WP AI Bridge.', 'wp-ai-bridge'), 403);
+            wp_die(esc_html__('Administrator permission is required to authorize WP AI Bridge.', 'wp-ai-bridge'), 'WP AI Bridge', ['response' => 403]);
         }
 
         $params = self::authorization_params();
         if (is_wp_error($params)) {
-            wp_die(esc_html($params->get_error_message()), 400);
+            wp_die(esc_html($params->get_error_message()), 'OAuth request error', ['response' => 400]);
         }
 
         if ('POST' === strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'))) {
             check_admin_referer('wpaib_oauth_authorize_' . $params['client_id']);
             $decision = isset($_POST['decision']) ? sanitize_key(wp_unslash($_POST['decision'])) : 'deny';
             if ('approve' !== $decision) {
-                self::redirect_oauth($params['redirect_uri'], ['error' => 'access_denied', 'state' => $params['state']]);
+                self::redirect_oauth($params['redirect_uri'], ['error' => 'access_denied', 'error_description' => 'Authorization was cancelled.', 'state' => $params['state']]);
             }
 
             $code = 'wpaib_code_' . bin2hex(random_bytes(32));
@@ -202,11 +193,11 @@ final class WPAIB_OAuth {
         self::render_consent($params);
     }
 
-    public static function token(WP_REST_Request $request): WP_REST_Response|WP_Error {
-        $grant_type = (string) $request->get_param('grant_type');
+    public static function token(WP_REST_Request $request): WP_REST_Response {
+        $grant_type = trim((string) $request->get_param('grant_type'));
         if ('authorization_code' === $grant_type) return self::exchange_code($request);
         if ('refresh_token' === $grant_type) return self::exchange_refresh($request);
-        return self::oauth_error('unsupported_grant_type', 'Supported grants are authorization_code and refresh_token.', 400);
+        return self::oauth_error_response('unsupported_grant_type', 'Supported grants are authorization_code and refresh_token.', 400);
     }
 
     public static function revoke(WP_REST_Request $request): WP_REST_Response {
@@ -229,45 +220,54 @@ final class WPAIB_OAuth {
         return $record;
     }
 
-    private static function exchange_code(WP_REST_Request $request): WP_REST_Response|WP_Error {
+    private static function exchange_code(WP_REST_Request $request): WP_REST_Response {
         $code = trim((string) $request->get_param('code'));
         $client_id = trim((string) $request->get_param('client_id'));
         $redirect_uri = trim((string) $request->get_param('redirect_uri'));
         $verifier = trim((string) $request->get_param('code_verifier'));
-        if ('' === $code || '' === $client_id || '' === $redirect_uri || '' === $verifier) return self::oauth_error('invalid_request', 'code, client_id, redirect_uri and code_verifier are required.', 400);
+        if ('' === $code || '' === $client_id || '' === $redirect_uri || '' === $verifier) {
+            return self::oauth_error_response('invalid_request', 'code, client_id, redirect_uri and code_verifier are required.', 400);
+        }
 
         $key = self::CODE_PREFIX . self::token_hash($code);
         $record = get_transient($key);
-        if (!is_array($record)) return self::oauth_error('invalid_grant', 'Authorization code is invalid or expired.', 400);
-        if (!hash_equals((string) $record['client_id'], $client_id) || !hash_equals((string) $record['redirect_uri'], $redirect_uri)) return self::oauth_error('invalid_grant', 'Client or redirect URI mismatch.', 400);
+        if (!is_array($record)) return self::oauth_error_response('invalid_grant', 'Authorization code is invalid or expired.', 400);
+        if (!hash_equals((string) $record['client_id'], $client_id) || !hash_equals((string) $record['redirect_uri'], $redirect_uri)) {
+            return self::oauth_error_response('invalid_grant', 'Client or redirect URI mismatch.', 400);
+        }
 
         $computed = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
-        if (!hash_equals((string) $record['code_challenge'], $computed)) return self::oauth_error('invalid_grant', 'PKCE verification failed.', 400);
+        if (!hash_equals((string) $record['code_challenge'], $computed)) return self::oauth_error_response('invalid_grant', 'PKCE verification failed.', 400);
 
         delete_transient($key);
         $payload = self::issue_tokens($client_id, (int) $record['user_id'], (string) $record['scope']);
         WPAIB_Audit::record('oauth_token_issued', ['client_id' => $client_id]);
-        return new WP_REST_Response($payload, 200);
+        return self::token_response($payload);
     }
 
-    private static function exchange_refresh(WP_REST_Request $request): WP_REST_Response|WP_Error {
+    private static function exchange_refresh(WP_REST_Request $request): WP_REST_Response {
         $refresh = trim((string) $request->get_param('refresh_token'));
         $client_id = trim((string) $request->get_param('client_id'));
-        if ('' === $refresh || '' === $client_id) return self::oauth_error('invalid_request', 'refresh_token and client_id are required.', 400);
+        if ('' === $refresh || '' === $client_id) return self::oauth_error_response('invalid_request', 'refresh_token and client_id are required.', 400);
 
         $tokens = self::tokens();
         $hash = self::token_hash($refresh);
         $record = $tokens[$hash] ?? null;
-        if (!is_array($record) || 'refresh' !== ($record['type'] ?? '') || (int) ($record['expires_at'] ?? 0) <= time()) return self::oauth_error('invalid_grant', 'Refresh token is invalid or expired.', 400);
-        if (!hash_equals((string) $record['client_id'], $client_id)) return self::oauth_error('invalid_grant', 'Client mismatch.', 400);
+        if (!is_array($record) || 'refresh' !== ($record['type'] ?? '') || (int) ($record['expires_at'] ?? 0) <= time()) {
+            return self::oauth_error_response('invalid_grant', 'Refresh token is invalid or expired.', 400);
+        }
+        if (!hash_equals((string) $record['client_id'], $client_id)) return self::oauth_error_response('invalid_grant', 'Client mismatch.', 400);
+
         $user_id = (int) ($record['user_id'] ?? 0);
-        if ($user_id < 1 || !user_can($user_id, 'manage_options')) return self::oauth_error('invalid_grant', 'The authorizing WordPress administrator no longer has access.', 400);
+        if ($user_id < 1 || !user_can($user_id, 'manage_options')) {
+            return self::oauth_error_response('invalid_grant', 'The authorizing WordPress administrator no longer has access.', 400);
+        }
 
         unset($tokens[$hash]);
         self::save_tokens($tokens);
         $payload = self::issue_tokens($client_id, $user_id, (string) ($record['scope'] ?? self::SCOPE));
         WPAIB_Audit::record('oauth_token_refreshed', ['client_id' => $client_id]);
-        return new WP_REST_Response($payload, 200);
+        return self::token_response($payload);
     }
 
     private static function issue_tokens(string $client_id, int $user_id, string $scope): array {
@@ -356,7 +356,7 @@ final class WPAIB_OAuth {
     }
 
     private static function redirect_oauth(string $redirect_uri, array $args): void {
-        if (!self::allowed_redirect_uri($redirect_uri)) wp_die('Invalid OAuth redirect URI.', 400);
+        if (!self::allowed_redirect_uri($redirect_uri)) wp_die('Invalid OAuth redirect URI.', 'OAuth request error', ['response' => 400]);
         $args = array_filter($args, static fn($value): bool => null !== $value && '' !== $value);
         wp_redirect(add_query_arg($args, $redirect_uri), 302, 'WP AI Bridge');
         exit;
@@ -422,14 +422,23 @@ final class WPAIB_OAuth {
         return hash_hmac('sha256', $token, wp_salt('auth'));
     }
 
-    private static function oauth_error(string $error, string $description, int $status): WP_Error {
-        return new WP_Error($error, $description, ['status' => $status, 'oauth_error' => $error]);
+    private static function token_response(array $payload): WP_REST_Response {
+        $response = new WP_REST_Response($payload, 200);
+        $response->header('Cache-Control', 'no-store');
+        $response->header('Pragma', 'no-cache');
+        return $response;
+    }
+
+    private static function oauth_error_response(string $error, string $description, int $status): WP_REST_Response {
+        $response = new WP_REST_Response(['error' => $error, 'error_description' => $description], $status);
+        $response->header('Cache-Control', 'no-store');
+        return $response;
     }
 
     private static function send_json(array $data): void {
         status_header(200);
-        nocache_headers();
         header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: public, max-age=300');
         echo wp_json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         exit;
     }
