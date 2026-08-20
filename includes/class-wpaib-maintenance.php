@@ -3,12 +3,12 @@
 defined('ABSPATH') || exit;
 
 final class WPAIB_Maintenance {
-    private const MAX_WRITE_BYTES = 2097152;
+    private const MAX_WRITE_BYTES = 5242880;
     private const BACKUP_DIRNAME = 'wp-ai-bridge-backups';
 
     public static function write_file(string $relative_path, string $content): array|WP_Error {
         if (strlen($content) > self::MAX_WRITE_BYTES) {
-            return new WP_Error('wpaib_write_too_large', 'File content exceeds the 2 MiB write limit.', ['status' => 413]);
+            return new WP_Error('wpaib_write_too_large', 'File content exceeds the 5 MiB write limit.', ['status' => 413]);
         }
         $target = self::resolve_write_path($relative_path, true);
         if (is_wp_error($target)) return $target;
@@ -41,6 +41,7 @@ final class WPAIB_Maintenance {
         }
 
         clearstatcache(true, $target);
+        self::invalidate_php_cache($target);
         WPAIB_Audit::record('write_file', ['path' => $relative_path, 'bytes' => strlen($content), 'created' => !$existed, 'backup_id' => $backup_id]);
         return ['ok' => true, 'path' => $relative_path, 'bytes' => strlen($content), 'created' => !$existed, 'backup_id' => $backup_id, 'sha256' => hash('sha256', $content)];
     }
@@ -52,6 +53,7 @@ final class WPAIB_Maintenance {
         $backup_id = self::backup_file($relative_path, $target);
         if (is_wp_error($backup_id)) return $backup_id;
         if (!@unlink($target)) return new WP_Error('wpaib_delete_failed', 'Unable to delete file.', ['status' => 500]);
+        self::invalidate_php_cache($target);
         WPAIB_Audit::record('delete_file', ['path' => $relative_path, 'backup_id' => $backup_id]);
         return ['ok' => true, 'path' => $relative_path, 'backup_id' => $backup_id];
     }
@@ -73,27 +75,9 @@ final class WPAIB_Maintenance {
         $parent = dirname($target);
         if (!is_dir($parent) && !wp_mkdir_p($parent)) return new WP_Error('wpaib_restore_parent_failed', 'Unable to create restore directory.', ['status' => 500]);
         if (false === @file_put_contents($target, $content, LOCK_EX)) return new WP_Error('wpaib_restore_failed', 'Unable to restore backup.', ['status' => 500]);
+        self::invalidate_php_cache($target);
         WPAIB_Audit::record('restore_backup', ['path' => $meta['path'], 'backup_id' => $backup_id]);
         return ['ok' => true, 'path' => $meta['path'], 'backup_id' => $backup_id, 'sha256' => hash('sha256', $content)];
-    }
-
-    public static function activate_plugin(string $plugin_file): array|WP_Error {
-        require_once ABSPATH . 'wp-admin/includes/plugin.php';
-        $plugin_file = plugin_basename($plugin_file);
-        if (!array_key_exists($plugin_file, get_plugins())) return new WP_Error('wpaib_plugin_not_found', 'Plugin was not found.', ['status' => 404]);
-        $result = activate_plugin($plugin_file, '', false, false);
-        if (is_wp_error($result)) return $result;
-        WPAIB_Audit::record('activate_plugin', ['plugin' => $plugin_file]);
-        return ['ok' => true, 'plugin' => $plugin_file, 'active' => true];
-    }
-
-    public static function deactivate_plugin(string $plugin_file): array|WP_Error {
-        require_once ABSPATH . 'wp-admin/includes/plugin.php';
-        $plugin_file = plugin_basename($plugin_file);
-        if (!array_key_exists($plugin_file, get_plugins())) return new WP_Error('wpaib_plugin_not_found', 'Plugin was not found.', ['status' => 404]);
-        deactivate_plugins($plugin_file, false, false);
-        WPAIB_Audit::record('deactivate_plugin', ['plugin' => $plugin_file]);
-        return ['ok' => true, 'plugin' => $plugin_file, 'active' => false];
     }
 
     private static function backup_file(string $relative_path, string $target): string|WP_Error {
@@ -167,5 +151,11 @@ final class WPAIB_Maintenance {
             return new WP_Error('wpaib_php_syntax_error', 'PHP syntax validation failed: ' . $error->getMessage(), ['status' => 422]);
         }
         return true;
+    }
+
+    private static function invalidate_php_cache(string $path): void {
+        if ('php' === strtolower((string) pathinfo($path, PATHINFO_EXTENSION)) && function_exists('opcache_invalidate')) {
+            @opcache_invalidate($path, true);
+        }
     }
 }
