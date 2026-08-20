@@ -1,33 +1,33 @@
 # WP AI Bridge
 
-A guarded WordPress REST + MCP bridge for authorized AI-assisted diagnostics and theme/plugin maintenance.
+A guarded WordPress REST + MCP bridge for authorized AI-assisted diagnostics and theme/plugin development.
 
-## Current scope
-
-The bridge supports:
+## What it does
 
 - Site / PHP / active-theme information.
 - Plugin inventory and activation state.
-- Directory browsing and text search inside plugins/themes.
+- Directory browsing and source-code search.
 - Read selected files under `plugins/`, `themes/`, and `uploads/`.
-- MCP tools for creating/replacing/deleting/restoring files under `plugins/` and `themes/` when Maintenance Mode is enabled.
+- Create, replace, delete, and restore files under `plugins/` and `themes/` with a valid API token.
 - Automatic backup before overwrite/delete.
 - PHP syntax validation before PHP files are written.
-- Plugin activation/deactivation while Maintenance Mode is enabled.
+- Plugin activation/deactivation.
 - Path traversal and symlink escape protection.
 - Secret redaction and bounded audit logging.
 - Dedicated Bearer token authentication.
+- GitHub-backed update checks and WordPress-native updating from the repository `main` branch.
 
 The bridge intentionally does **not** expose WordPress core writes, `wp-config.php`, arbitrary database queries, or shell commands.
 
 ## Install
 
-1. Download or clone the repository into `wp-content/plugins/wp-ai-bridge`.
+1. Put the repository at `wp-content/plugins/wp-ai-bridge`.
 2. Activate **WP AI Bridge**.
 3. Open **Settings → WP AI Bridge**.
 4. Generate an API token and copy it immediately; only its password hash is stored.
 5. Keep the site on HTTPS.
-6. Enable **Maintenance Mode** if you want continuous theme/plugin edits without a WordPress confirmation step for each operation.
+
+There is no Maintenance Mode. A valid bridge token always grants the hard-scoped theme/plugin capabilities below.
 
 ## Connection
 
@@ -49,17 +49,6 @@ Authentication:
 Authorization: Bearer YOUR_TOKEN
 ```
 
-REST connection test:
-
-```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-  https://example.com/wp-json/wp-ai-bridge/v1/ping
-```
-
-## Maintenance Mode
-
-Maintenance Mode is a one-time WordPress setting. While enabled, an authenticated bridge client can continuously modify code without requesting a separate WordPress confirmation for each operation.
-
 Allowed write scope:
 
 ```text
@@ -67,13 +56,11 @@ wp-content/plugins/**
 wp-content/themes/**
 ```
 
-Hard-blocked write scope includes WordPress core, `wp-config.php`, `.env`, server configuration, database access, shell commands, archives, and private-key files.
-
-Existing files are backed up before overwrite/delete. A returned `backup_id` can be passed to `wp_restore_backup`.
+Hard-blocked scope includes WordPress core, `wp-config.php`, `.env`, server configuration, arbitrary database access, shell commands, archives, and private-key files.
 
 ## MCP tools
 
-Read tools:
+Read/discovery tools:
 
 ```text
 wp_ping
@@ -85,7 +72,7 @@ wp_read_file
 wp_recent_audit
 ```
 
-Maintenance tools:
+Theme/plugin development tools:
 
 ```text
 wp_write_file
@@ -95,7 +82,13 @@ wp_activate_plugin
 wp_deactivate_plugin
 ```
 
-Write tools return an error while Maintenance Mode is disabled.
+## Updating
+
+The WordPress settings page checks the GitHub `main` branch when it is loaded. It compares the installed `WPAIB_VERSION` / plugin `Version` header with the version in `main`.
+
+When a newer version exists, **Update now** uses the normal WordPress plugin upgrader and downloads the public GitHub `main` ZIP.
+
+For every new plugin release, increase the `Version:` header and `WPAIB_VERSION` in `wp-ai-bridge.php`.
 
 ## Security model
 
